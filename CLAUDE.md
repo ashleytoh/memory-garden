@@ -33,15 +33,26 @@ The MVP works, but the visuals are not good enough. The user dislikes the curren
 
 ## Suggested visual direction
 
-- Pixel RPG garden scene with:
-  - cozy sky/grass background
-  - tile paths
-  - cottage or shrine motif for AI identity/user context
-  - plants/trees/signposts/stone tablets/fireflies as memory metaphors
-  - small decorative animations
+Use this structured pixel-art prompt as the art direction:
+
+> A cozy 16-bit pixel RPG memory garden UI, warm dusk lighting, soft grass tiles, winding stone path, tiny cottage/shrine for AI identity, glowing fireflies, chunky outlined sprites, tactile game dialogue panels, rounded pixel buttons, warm cream text, emerald/moss/lavender/gold palette, gentle idle animations, charming but readable, like a tiny emotional tamagotchi for AI memory.
+
+Visual checklist:
+
+- Replace generic SaaS layout with a cohesive game scene.
+- Use tile-based ground/path composition, not random floating emojis.
+- Make memory objects feel like sprites:
+  - preferences → flowers
+  - projects → trees/garden plots
+  - goals → saplings
+  - open loops → wilted plants/signposts needing care
+  - moments → glowing stones/fireflies
+  - identity/user context → cottage/shrine
 - Inspector should feel like a game dialogue/card panel, not a form.
 - Buttons should feel tactile and playful.
 - Typography can mix a pixel display font for headings with readable body text.
+- Add hover/selected states that feel magical: glow, bounce, sparkle, cursor affordance.
+- Avoid photorealism, gradients that feel corporate, generic dashboard cards, and emoji-only sprites if CSS pixel shapes can do better.
 
 ## Technical constraints
 
