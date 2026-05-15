@@ -951,6 +951,17 @@ function App() {
   // When fast-travelling from the sidebar, briefly enable a transform
   // transition on the world so the camera pan reads as a glide.
   const [isTraveling, setIsTraveling] = useState(false);
+  // The plant the avatar is currently fast-travelling toward. Drives a
+  // brief "destination pin" sparkle on that plant so the user understands
+  // where they just teleported. Cleared ~600ms after travel completes.
+  const [travelTargetId, setTravelTargetId] = useState<string | null>(null);
+  // Timers for the chained fast-travel handler. We open the inspector
+  // AFTER the camera pan completes (matching the 320ms transition on
+  // .world[data-traveling]). Stored in refs so a second click during a
+  // mid-flight pan can cancel the prior pending open and reschedule.
+  const travelTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const travelOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const travelPinTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Close the Import help popover on Esc or click outside its wrapper.
   useEffect(() => {
@@ -972,7 +983,56 @@ function App() {
     };
   }, [showImportHelp]);
   const [toast, setToast] = useState<string | null>(null);
+  /* Actionable toast for the disconnected-mutation warning. Renders alongside
+     the plain status toast but stays interactive (focusable Connect button,
+     Esc dismiss). Kept separate so the existing aria-live="polite" toast
+     doesn't have to grow buttons. */
+  const [actionableToast, setActionableToast] = useState<string | null>(null);
+  /* Session-scoped snooze for the first-mutation warning. Persisted to
+     sessionStorage (NOT localStorage) so it resets on every browser reload
+     — the user gets one fresh nudge per session, which is the design ask.
+     Key: `mg.disconnected-warn-shown`. */
+  const [mutationWarnSnoozed, setMutationWarnSnoozed] = useState<boolean>(() => {
+    try { return sessionStorage.getItem('mg.disconnected-warn-shown') === '1'; } catch { return false; }
+  });
   const [importanceFlash, setImportanceFlash] = useState(0);
+  // Per-memory "level-up" pulse counter. Bumping a value here re-applies the
+  // .boost-pulse class on the plant in the garden so the user sees the boost
+  // land on the sprite (not just inside the inspector). A timeout clears it
+  // ~700ms later so the class can be re-applied on the next boost.
+  const [boostPulseKeys, setBoostPulseKeys] = useState<Record<string, number>>({});
+  const boostPulseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Per-memory "fading water" state. When a plant is un-watered we keep its
+  // droplet in the DOM for ~400ms with .fading-out so it fades + drips down
+  // instead of popping out. Cleared by a timeout that removes the entry.
+  const [fadingWater, setFadingWater] = useState<Record<string, number>>({});
+  const fadingWaterTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  function triggerWaterFade(id: string) {
+    setFadingWater((prev) => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+    const timers = fadingWaterTimersRef.current;
+    if (timers[id]) clearTimeout(timers[id]);
+    timers[id] = setTimeout(() => {
+      setFadingWater((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      delete timers[id];
+    }, 400);
+  }
+  function triggerBoostPulse(id: string) {
+    setBoostPulseKeys((prev) => ({ ...prev, [id]: (prev[id] || 0) + 1 }));
+    const timers = boostPulseTimersRef.current;
+    if (timers[id]) clearTimeout(timers[id]);
+    timers[id] = setTimeout(() => {
+      setBoostPulseKeys((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      delete timers[id];
+    }, 700);
+  }
 
   /* Inline-edit state. `null` means the inspector is in read mode. When the
      user clicks Edit we copy the selected memory's title/text into draft
@@ -1184,6 +1244,11 @@ function App() {
   const stepRef = useRef(0);
   const keysRef = useRef<Set<string>>(new Set());
   const startedRef = useRef(started);
+  // Mirror selectedId so fastTravelTo can read the current selection
+  // synchronously (without re-binding the callback every render or
+  // depending on stale React closures inside a setTimeout).
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
   useEffect(() => { posRef.current = playerPos; }, [playerPos]);
 
@@ -1343,6 +1408,42 @@ function App() {
     const id = window.setTimeout(() => setToast(null), 4000);
     return () => window.clearTimeout(id);
   }, [toast]);
+
+  /* Persistence mode is fully derived from existing state — sample garden
+     (tutorial / pre-import), imported (file picker, in-memory only), or
+     connected (folder handle present, mutations write to disk). Used by the
+     badge, the edit footer, the Forget dialog, and the first-mutation toast.
+     No new mode flag is introduced. */
+  const persistenceMode: 'connected' | 'sample' | 'imported' =
+    dirHandle ? 'connected' : isSample ? 'sample' : 'imported';
+
+  /* Called from every in-memory mutation entry point (water / boost / compost /
+     forget / saveEdit) BEFORE the mutation happens. Shows the one-shot
+     actionable toast the first time a user mutates while disconnected, then
+     flips `mutationWarnSnoozed` (and the sessionStorage flag) so subsequent
+     mutations in the same session stay silent. */
+  function warnIfDisconnectedMutation() {
+    if (dirHandle) return; // saving to disk — no warning needed
+    if (mutationWarnSnoozed) return;
+    setMutationWarnSnoozed(true);
+    try { sessionStorage.setItem('mg.disconnected-warn-shown', '1'); } catch { /* ignore */ }
+    setActionableToast('Changes are not being saved — connect a folder to keep them.');
+  }
+
+  // Auto-clear the actionable toast on a slightly longer timer so the user has
+  // time to reach for the Connect button. Esc dismisses early.
+  useEffect(() => {
+    if (!actionableToast) return;
+    const id = window.setTimeout(() => setActionableToast(null), 7000);
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setActionableToast(null);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.clearTimeout(id);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [actionableToast]);
 
   async function importFiles(files: FileList | null) {
     if (!files?.length) return;
@@ -1511,16 +1612,26 @@ function App() {
         }
       }
 
+      /* Capture the prior persistence state BEFORE we mutate it so we can
+         decide whether to surface the "Sample garden cleared" toast — the
+         user is about to lose any in-memory edits they made while
+         disconnected and we want them to understand why. */
+      const wasDisconnected = !dirHandle;
       applyConnectedMemories(connected);
       setDirHandle(handle);
       await persistHandle(handle);
       setHasPersistedHandle(true);
+      // Disconnected-mutation warning no longer applies — drop the actionable
+      // toast if it's still up so the screen doesn't keep nagging post-connect.
+      setActionableToast(null);
       const skipped = errors.length ? ` · ${errors.length} skipped` : '';
       if (connected.length === 0) {
         showToast(
           `Connected to ${handle.name} · 0 memory files found. ` +
             `Expected one .md per memory (with frontmatter) or a MEMORY.md inside${skipped}`,
         );
+      } else if (wasDisconnected) {
+        showToast(`Connected. Sample garden cleared.`);
       } else {
         showToast(`Connected to ${handle.name} · loaded ${connected.length} memories${skipped}`);
       }
@@ -1542,10 +1653,16 @@ function App() {
         return;
       }
       const { memories: connected, errors } = await readMemoryDir(handle);
+      const wasDisconnected = !dirHandle;
       applyConnectedMemories(connected);
       setDirHandle(handle);
+      setActionableToast(null);
       const skipped = errors.length ? ` · ${errors.length} skipped` : '';
-      showToast(`Reconnected · ${connected.length} memories${skipped}`);
+      if (wasDisconnected) {
+        showToast(`Connected. Sample garden cleared.`);
+      } else {
+        showToast(`Reconnected · ${connected.length} memories${skipped}`);
+      }
     } catch {
       showToast('Could not reconnect to the memory folder.');
     }
@@ -1661,17 +1778,53 @@ function App() {
   /* Fast-travel from a sidebar click: teleport the avatar to the nearest
      passable tile adjacent to the chosen memory, pan the camera so the
      memory is centred (smooth via a temporary transform transition on
-     .world), and open the inspector. We chose teleport over auto-walk
+     .world), then open the inspector. We chose teleport over auto-walk
      because pathfinding around props/water in a 56×32 world would feel
-     laggy and the camera glide already gives spatial continuity. */
+     laggy and the camera glide already gives spatial continuity.
+
+     Chained handler — clicking a row should resolve the user's intent in
+     a single motion:
+       - clicked the memory already showing in the inspector: no-op
+         (don't re-pan, don't flicker)
+       - inspector closed: pan first, open inspector at pan-end via a
+         setTimeout matched to the .world transition duration. Matching
+         the CSS duration with a JS timer (rather than transitionend) is
+         deliberate — the transform's transitionend can fire multiple
+         times under camera clamping or get pre-empted by a drag, which
+         would make the open look jittery.
+       - inspector already open on a different memory: switch contents
+         immediately so the user sees direct swap, but still let the
+         camera pan finish in the background. */
+  const TRAVEL_MS = 320; // matches .world[data-traveling] transition
   function fastTravelTo(memory: PlacedMemory) {
+    // Same memory already in the inspector — do nothing.
+    if (selectedIdRef.current === memory.id) return;
+
     const target = nearestPassableAdjacent(memory.row, memory.col, placedRef.current);
     if (!target) return;
+
     // Hand keyboard focus back to the world so the user can resume walking
     // immediately after the click. Without this, focus stays on the clicked
     // sidebar row and the global keydown handler keeps bailing on it.
     const active = document.activeElement as HTMLElement | null;
     if (active?.closest('.memory-sidebar')) active.blur();
+
+    // Cancel any pending open/clear from a previous in-flight fast-travel
+    // so the new click takes over cleanly (no late-firing setSelectedId
+    // pointing at the previously targeted plant).
+    if (travelOpenTimerRef.current) {
+      clearTimeout(travelOpenTimerRef.current);
+      travelOpenTimerRef.current = null;
+    }
+    if (travelTimerRef.current) {
+      clearTimeout(travelTimerRef.current);
+      travelTimerRef.current = null;
+    }
+    if (travelPinTimerRef.current) {
+      clearTimeout(travelPinTimerRef.current);
+      travelPinTimerRef.current = null;
+    }
+
     // Face the memory after teleport so it becomes the focused plant.
     const dr = memory.row - target.row;
     const dc = memory.col - target.col;
@@ -1682,6 +1835,7 @@ function App() {
     else if (dc > 0) dir = 'right';
 
     setIsTraveling(true);
+    setTravelTargetId(memory.id);
     posRef.current = target;
     setPlayerPos(target);
     facingRef.current = dir;
@@ -1690,9 +1844,39 @@ function App() {
       memory.col * TILE + TILE / 2 - VIEWPORT_W / 2,
       memory.row * TILE + TILE / 2 - VIEWPORT_H / 2,
     ));
-    setSelectedId(memory.id);
-    window.setTimeout(() => setIsTraveling(false), 320);
+
+    // If the inspector is already open on a different memory, swap its
+    // contents right away — the user already sees one open and expects a
+    // direct change. Otherwise wait for the pan to (nearly) finish so the
+    // world move reads as travel before the panel slides in.
+    const inspectorOpen = selectedIdRef.current !== null;
+    if (inspectorOpen) {
+      setSelectedId(memory.id);
+    } else {
+      travelOpenTimerRef.current = window.setTimeout(() => {
+        setSelectedId(memory.id);
+        travelOpenTimerRef.current = null;
+      }, TRAVEL_MS);
+    }
+
+    travelTimerRef.current = window.setTimeout(() => {
+      setIsTraveling(false);
+      travelTimerRef.current = null;
+    }, TRAVEL_MS);
+    // Keep the destination pin a little past the end of the pan so the
+    // user can still see what just happened once the world settles.
+    travelPinTimerRef.current = window.setTimeout(() => {
+      setTravelTargetId(null);
+      travelPinTimerRef.current = null;
+    }, TRAVEL_MS + 220);
   }
+  // Cancel any pending fast-travel timers on unmount so they can't fire
+  // setState after the App is gone (StrictMode double-mount, hot reload).
+  useEffect(() => () => {
+    if (travelTimerRef.current) clearTimeout(travelTimerRef.current);
+    if (travelOpenTimerRef.current) clearTimeout(travelOpenTimerRef.current);
+    if (travelPinTimerRef.current) clearTimeout(travelPinTimerRef.current);
+  }, []);
 
   // `C` key recenters the camera on the player. Wired up alongside the
   // existing keyboard listener block via a ref so the listener stays
@@ -1777,9 +1961,11 @@ function App() {
 
   async function waterMemory() {
     if (!selected) return;
+    warnIfDisconnectedMutation();
     const next = !selected.watered;
     updateMemory(selected.id, { watered: next });
     if (next) setSplashKey((k) => k + 1);
+    else triggerWaterFade(selected.id);
     if (dirHandle && isConnectedMemory(selected)) {
       try {
         const result = await writeMemoryFile(dirHandle, selected.source, stampedPatch({
@@ -1796,13 +1982,16 @@ function App() {
 
   async function boostMemory() {
     if (!selected) return;
+    warnIfDisconnectedMutation();
     if (selected.importance >= 5) {
       setImportanceFlash((n) => n + 1);
+      triggerBoostPulse(selected.id);
       return;
     }
     const next = Math.min(5, selected.importance + 1);
     updateMemory(selected.id, { importance: next });
     setImportanceFlash((n) => n + 1);
+    triggerBoostPulse(selected.id);
     if (dirHandle && isConnectedMemory(selected)) {
       try {
         const result = await writeMemoryFile(dirHandle, selected.source, stampedPatch({
@@ -1822,6 +2011,7 @@ function App() {
 
   async function compostMemory() {
     if (!selected) return;
+    warnIfDisconnectedMutation();
     const id = selected.id;
     const sourceFile = selected.source;
     const title = selected.title;
@@ -1852,6 +2042,7 @@ function App() {
   async function forgetMemory(target?: MemorySeed) {
     const m = target ?? selected;
     if (!m) return;
+    warnIfDisconnectedMutation();
     const id = m.id;
     const sourceFile = m.source;
     const title = m.title;
@@ -1919,6 +2110,7 @@ function App() {
 
   async function saveEdit() {
     if (!editing) return;
+    warnIfDisconnectedMutation();
     const target = memories.find((m) => m.id === editing.id);
     if (!target) {
       setEditing(null);
@@ -2097,39 +2289,14 @@ function App() {
               )}
             </div>
             {isFsAccessSupported() && (
-              dirHandle ? (
-                <div className="hud-connected" title={`Connected to ${dirHandle.name}`}>
-                  <FolderOpen size={14} />
-                  <span className="hud-connected-name">{dirHandle.name}</span>
-                  <button
-                    type="button"
-                    className="hud-connected-action"
-                    onClick={() => void reloadFromDisk()}
-                    title="Reload from disk"
-                    aria-label="Reload memories from disk"
-                  >
-                    <RefreshCw size={12} />
-                  </button>
-                  <button
-                    type="button"
-                    className="hud-connected-action"
-                    onClick={() => void disconnectMemoryFolder()}
-                    title="Disconnect"
-                    aria-label="Disconnect memory folder"
-                  >
-                    <Unplug size={12} />
-                  </button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="hud-import hud-connect"
-                  onClick={() => (hasPersistedHandle ? void reconnectFromPersisted() : void connectMemoryFolder())}
-                  title={hasPersistedHandle ? 'Reconnect to last folder' : 'Connect a memory folder'}
-                >
-                  <FolderOpen size={14} /> {hasPersistedHandle ? 'Reconnect' : 'Connect folder'}
-                </button>
-              )
+              <PersistenceBadge
+                mode={persistenceMode}
+                folderName={dirHandle?.name ?? null}
+                onReload={() => void reloadFromDisk()}
+                onDisconnect={() => void disconnectMemoryFolder()}
+                onConnect={() => (hasPersistedHandle ? void reconnectFromPersisted() : void connectMemoryFolder())}
+                hasPersistedHandle={hasPersistedHandle}
+              />
             )}
           </div>
         </header>
@@ -2236,23 +2403,61 @@ function App() {
                 const Sprite = KIND_META[m.kind].Sprite;
                 const isSelected = selectedId === m.id;
                 const isFocused = focused?.id === m.id;
+                // Stable per-plant stagger so the boost/water/shimmer animations
+                // across 50+ plants don't sync up. Hash the id into a small
+                // negative delay; CSS reads it via the --stagger variable.
+                let h = 0;
+                for (let i = 0; i < m.id.length; i++) h = (h * 31 + m.id.charCodeAt(i)) | 0;
+                const stagger = ((Math.abs(h) % 100) / 100) * -3; // -3s..0s
+                const pulseKey = boostPulseKeys[m.id] || 0;
+                const isTravelTarget = travelTargetId === m.id;
                 return (
                   <button
                     key={m.id}
-                    className={`plant kind-${m.kind} mood-${m.mood} ${isSelected ? 'selected' : ''} ${isFocused ? 'focused' : ''} ${m.watered ? 'watered' : ''}`}
+                    className={`plant kind-${m.kind} mood-${m.mood} ${isSelected ? 'selected' : ''} ${isFocused ? 'focused' : ''} ${m.watered ? 'watered' : ''} ${pulseKey ? 'boost-pulse' : ''} ${isTravelTarget ? 'travel-target' : ''}`}
+                    data-importance={m.importance}
+                    data-age={m.age}
+                    data-travel-target={isTravelTarget ? 'true' : undefined}
                     style={{
                       left: m.col * TILE,
                       top: m.row * TILE,
                       width: TILE,
                       height: TILE,
                       zIndex: 5 + m.row,
+                      // CSS custom property used by .plant animations to
+                      // stagger their phase per memory id.
+                      ['--stagger' as never]: `${stagger}s`,
                     }}
                     onClick={() => setSelectedId(m.id)}
                     aria-label={m.title}
                   >
+                    {/* Soft halo behind the sprite for boosted memories
+                        (importance >= 4). Sits at z=-1 of the button via
+                        CSS so the sprite outline stays crisp. */}
+                    {m.importance >= 4 && <span className="boost-halo" aria-hidden />}
+                    {/* Destination pin: brief sparkle above a plant the
+                        avatar just fast-travelled to. Lives for ~500ms
+                        after the camera pan completes so the user can
+                        see "this is where you landed." */}
+                    {isTravelTarget && <span className="destination-pin" aria-hidden />}
                     <span className="sprite">
                       <Sprite />
                     </span>
+                    {/* Persistent water droplet glyph above watered plants.
+                        Hidden via CSS for wilted (age==='old' && !watered),
+                        which is already covered by the .watered class gate. */}
+                    {m.watered
+                      ? <span className="water-drop" aria-hidden />
+                      : fadingWater[m.id] && <span className="water-drop fading-out" aria-hidden />}
+                    {/* Importance star: shown for importance >= 3. The halo
+                        above handles 4-5; the star sits centered above the
+                        sprite at all boost levels >= 3. */}
+                    {m.importance >= 3 && <span className="boost-star" aria-hidden />}
+                    {/* Tiny shimmer dot for importance 2 — barely there, just
+                        a faint sparkle every few seconds so 2-star reads
+                        slightly different from 1-star without crowding the
+                        sprite. */}
+                    {m.importance === 2 && <span className="boost-shimmer" aria-hidden />}
                     {m.kind === 'open-loop' && <span className="alert-dot" />}
                     {isFocused && <span className="focus-bob">!</span>}
                     {isSelected && splashKey > 0 && m.watered && <span className="splash" key={splashKey} />}
@@ -2405,6 +2610,7 @@ function App() {
         {forgetTarget && (
           <ForgetDialog
             memory={forgetTarget}
+            disconnected={!dirHandle}
             onCancel={() => setForgetTargetId(null)}
             onConfirm={() => {
               const m = forgetTarget;
@@ -2417,6 +2623,41 @@ function App() {
         {toast && (
           <div className="toast" role="status" aria-live="polite">
             <span className="toast-bullet">▸</span> {toast}
+          </div>
+        )}
+
+        {actionableToast && (
+          /* Not a focus trap by design (criteria #9): focus stays wherever
+             the user left it; the Connect button is reachable via Tab and
+             Esc dismisses. role="status" + aria-live="polite" announces the
+             message without yanking focus. */
+          <div
+            className="toast toast-actionable"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="toast-bullet">▸</span>
+            <span className="toast-actionable-text">{actionableToast}</span>
+            <button
+              type="button"
+              className="toast-actionable-btn"
+              onClick={() => {
+                setActionableToast(null);
+                if (hasPersistedHandle) void reconnectFromPersisted();
+                else void connectMemoryFolder();
+              }}
+            >
+              <FolderOpen size={12} /> Connect folder
+            </button>
+            <button
+              type="button"
+              className="toast-actionable-close"
+              onClick={() => setActionableToast(null)}
+              aria-label="Dismiss"
+              title="Dismiss (Esc)"
+            >
+              <X size={12} strokeWidth={3} />
+            </button>
           </div>
         )}
       </div>
@@ -2539,10 +2780,12 @@ function MemorySidebar({
                   onBlur={() => onHover(null)}
                   onClick={() => onPick(m)}
                   onKeyDown={(e) => {
-                    // Browser already fires onClick on Enter for buttons.
-                    // We only handle Arrow nav here. The global movement
-                    // listener bails on events whose target is inside the
-                    // sidebar, so these arrows don't leak to the avatar.
+                    // Browser already fires onClick on Enter for buttons,
+                    // so Enter goes through onPick (fast-travel + open
+                    // inspector) for free. We handle Arrow nav and Esc
+                    // here. The global movement listener bails on events
+                    // whose target is inside the sidebar, so arrow keys
+                    // don't leak to the avatar.
                     if (e.key === 'ArrowDown') {
                       e.preventDefault();
                       const next = e.currentTarget.nextElementSibling as HTMLElement | null;
@@ -2551,6 +2794,14 @@ function MemorySidebar({
                       e.preventDefault();
                       const prev = e.currentTarget.previousElementSibling as HTMLElement | null;
                       if (prev && prev.classList.contains('memory-sidebar-row')) prev.focus();
+                    } else if (e.key === 'Escape') {
+                      // Hand keyboard control back to the scene so arrow
+                      // keys move the avatar again. Without this, focus
+                      // is trapped in the sidebar and the global
+                      // movement listener keeps bailing on the event.
+                      e.preventDefault();
+                      e.stopPropagation();
+                      e.currentTarget.blur();
                     }
                   }}
                 >
@@ -2612,6 +2863,144 @@ type EditingState = {
   previewKind: MemoryKind | null;
   previewMood: Mood | null;
 };
+
+/* Always-visible persistence badge. Three states (connected / sample /
+   imported) line up with the persistenceMode helper in MemoryGarden().
+   - Connected: green dot + folder name (truncated visually via CSS to
+     ~24ch, full name on hover).
+   - Sample / Imported: gold dot, click reveals a popover offering the same
+     connect flow as the welcome card.
+   aria-live="polite" on the wrapper announces state transitions for screen
+   readers (e.g. when the user successfully connects). */
+function PersistenceBadge({
+  mode,
+  folderName,
+  hasPersistedHandle,
+  onConnect,
+  onReload,
+  onDisconnect,
+}: {
+  mode: 'connected' | 'sample' | 'imported';
+  folderName: string | null;
+  hasPersistedHandle: boolean;
+  onConnect: () => void;
+  onReload: () => void;
+  onDisconnect: () => void;
+}) {
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // Close popover on Esc or click outside.
+  useEffect(() => {
+    if (!popoverOpen) return;
+    function onDown(e: MouseEvent | KeyboardEvent) {
+      if (e instanceof KeyboardEvent) {
+        if (e.key === 'Escape') setPopoverOpen(false);
+        return;
+      }
+      const node = wrapRef.current;
+      if (node && !node.contains(e.target as Node)) setPopoverOpen(false);
+    }
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onDown);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onDown);
+    };
+  }, [popoverOpen]);
+
+  // Close the popover automatically once we transition into connected mode.
+  useEffect(() => {
+    if (mode === 'connected') setPopoverOpen(false);
+  }, [mode]);
+
+  if (mode === 'connected') {
+    const safeName = folderName ?? '';
+    const truncated = safeName.length > 24 ? safeName.slice(0, 22) + '…' : safeName;
+    return (
+      <div
+        className="persist-badge persist-badge-connected"
+        role="status"
+        aria-live="polite"
+        aria-label={`Saving to ${safeName}`}
+        title={`Saving to ${safeName}`}
+      >
+        <span className="persist-badge-dot persist-badge-dot-green" aria-hidden />
+        <FolderOpen size={12} aria-hidden />
+        <span className="persist-badge-text" title={safeName}>{truncated}</span>
+        <button
+          type="button"
+          className="persist-badge-action"
+          onClick={onReload}
+          title="Reload from disk"
+          aria-label="Reload memories from disk"
+        >
+          <RefreshCw size={11} />
+        </button>
+        <button
+          type="button"
+          className="persist-badge-action"
+          onClick={onDisconnect}
+          title="Disconnect"
+          aria-label="Disconnect memory folder"
+        >
+          <Unplug size={11} />
+        </button>
+      </div>
+    );
+  }
+
+  const label = mode === 'sample'
+    ? 'Sample garden · changes won\'t save'
+    : 'Imported · changes won\'t save on reload';
+  const ariaLabel = mode === 'sample'
+    ? 'Sample garden, changes will not save. Click to connect a folder.'
+    : 'Imported file, changes will not save on reload. Click to connect a folder.';
+
+  return (
+    <div className="persist-badge-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="persist-badge persist-badge-warn"
+        onClick={() => setPopoverOpen((v) => !v)}
+        aria-expanded={popoverOpen}
+        aria-haspopup="dialog"
+        aria-label={ariaLabel}
+        // aria-live on the inner status text so the label change announces.
+      >
+        <span className="persist-badge-dot persist-badge-dot-gold" aria-hidden />
+        <span
+          className="persist-badge-text persist-badge-text-warn"
+          role="status"
+          aria-live="polite"
+        >
+          {label}
+        </span>
+      </button>
+      {popoverOpen && (
+        <div className="persist-badge-popover" role="dialog" aria-label="Connect a folder">
+          <p className="persist-badge-popover-title">
+            Connect a folder to save changes
+          </p>
+          <p className="persist-badge-popover-body">
+            Your AI's memory folder lives on disk. Connect it and the garden
+            will read and write back as your assistant updates its memories.
+          </p>
+          <button
+            type="button"
+            className="persist-badge-popover-cta"
+            onClick={() => {
+              setPopoverOpen(false);
+              onConnect();
+            }}
+          >
+            <FolderOpen size={12} /> {hasPersistedHandle ? 'Reconnect folder' : 'Connect folder'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function Dialogue({
   selected,
@@ -2847,9 +3236,12 @@ function Dialogue({
               </button>
               {' · '}
               <kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>Enter</kbd> save · <kbd>Esc</kbd> cancel
-              {!canPersist && (
-                <> · <span className="dialogue-edit-mute">in-memory only{selected.isTutorial ? ' (tutorial)' : ''}</span></>
-              )}
+              {' · '}
+              <span className="dialogue-edit-mute">
+                {canPersist
+                  ? 'Saved to disk'
+                  : 'Saved to this session only'}
+              </span>
             </p>
           ) : (
             <p className="dialogue-note">{gardenReflection(selected)}</p>
@@ -2964,10 +3356,16 @@ function truncatePreview(s: string, n = 240): string {
    than the destructive option). */
 function ForgetDialog({
   memory,
+  disconnected,
   onCancel,
   onConfirm,
 }: {
   memory: MemorySeed;
+  /* When true, the user has no folder connected — this memory only exists
+     in React state and forgetting it removes it from the session entirely.
+     Surfaced as an extra warning line so the user understands what they're
+     about to lose (and that there's nothing on disk to recover). */
+  disconnected: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -3057,6 +3455,11 @@ function ForgetDialog({
           This permanently removes the memory and rewrites the source file.
           Compost is recoverable; Forget is not.
         </p>
+        {disconnected && (
+          <p className="forget-warn forget-warn-session">
+            This memory exists only in this session. Forgetting it now removes it.
+          </p>
+        )}
         <div className="forget-actions">
           <button
             ref={cancelRef}

@@ -380,6 +380,139 @@ kbd {
 .hud-connected-action:active { transform: translateY(1px); }
 
 /* ────────────────────────────────────────────────────────────────
+   Persistence badge — always-visible "where is this state going?"
+   indicator. Three states share the same shell so they read as one
+   evolving signal rather than three separate widgets.
+   ──────────────────────────────────────────────────────────────── */
+.persist-badge-wrap { position: relative; display: inline-flex; }
+.persist-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: var(--hud-h);
+  padding: 0 12px;
+  background: linear-gradient(180deg, #2a1f24 0%, #170c12 100%);
+  color: var(--paper);
+  border: 3px solid var(--frame-out);
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 2px #3a2a2f, 0 3px 0 var(--frame-out);
+  font-family: 'VT323', monospace;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  text-shadow: 1px 1px 0 #0d0608;
+  cursor: default;
+  transition: transform .08s, box-shadow .08s;
+}
+.persist-badge-connected {
+  background: linear-gradient(180deg, #2a5424 0%, #1a3618 100%);
+  box-shadow: inset 0 0 0 2px #4a8a3e, 0 3px 0 var(--frame-out);
+}
+.persist-badge-warn {
+  background: linear-gradient(180deg, #5a432a 0%, #2e2114 100%);
+  box-shadow: inset 0 0 0 2px #8a6a3e, 0 3px 0 var(--frame-out);
+  cursor: pointer;
+}
+.persist-badge-warn:hover {
+  transform: translateY(1px);
+  box-shadow: inset 0 0 0 2px #c89a52, 0 2px 0 var(--frame-out);
+}
+.persist-badge-warn:active {
+  transform: translateY(3px);
+  box-shadow: inset 0 0 0 2px #c89a52, 0 0 0 var(--frame-out);
+}
+.persist-badge-warn:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+.persist-badge-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex: none;
+}
+.persist-badge-dot-green {
+  background: #7fd462;
+  box-shadow: 0 0 6px #7fd462, inset 0 -2px 0 #3a8a26;
+}
+.persist-badge-dot-gold {
+  background: var(--gold);
+  box-shadow: 0 0 6px var(--gold), inset 0 -2px 0 #8a6a14;
+}
+.persist-badge-text {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--gold-l);
+}
+.persist-badge-text-warn { color: var(--paper); max-width: 32ch; }
+.persist-badge-action {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  padding: 0;
+  background: rgba(0,0,0,.25);
+  color: var(--paper);
+  border: 2px solid var(--frame-out);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: transform .08s, background .15s;
+}
+.persist-badge-action:hover { background: rgba(255,255,255,.12); transform: translateY(-1px); }
+.persist-badge-action:active { transform: translateY(1px); }
+
+.persist-badge-popover {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  z-index: 80;
+  width: 280px;
+  padding: 14px;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.04) 0 2px, transparent 2px 4px),
+    linear-gradient(180deg, #2a1a20 0%, #170c12 100%);
+  border: 3px solid var(--frame-out);
+  border-radius: 8px;
+  box-shadow:
+    inset 0 0 0 2px var(--gold-d),
+    inset 0 0 0 4px var(--frame-in),
+    0 6px 0 var(--frame-out);
+  color: var(--paper);
+  font-family: 'VT323', monospace;
+  font-size: 17px;
+  line-height: 1.35;
+}
+.persist-badge-popover-title {
+  margin: 0 0 6px 0;
+  color: var(--gold-l);
+  font-size: 19px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.persist-badge-popover-body {
+  margin: 0 0 10px 0;
+  color: var(--paper);
+  opacity: .9;
+}
+.persist-badge-popover-cta {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  background: linear-gradient(180deg, #4a8a3e 0%, #2a5424 100%);
+  color: var(--paper);
+  border: 3px solid var(--frame-out);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 2px #6db05f, 0 3px 0 var(--frame-out);
+  font-family: 'VT323', monospace;
+  font-size: 18px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  text-shadow: 1px 1px 0 #1d3a18;
+  cursor: pointer;
+  transition: transform .08s, box-shadow .08s;
+}
+.persist-badge-popover-cta:hover { transform: translateY(1px); box-shadow: inset 0 0 0 2px #8ed27e, 0 2px 0 var(--frame-out); }
+.persist-badge-popover-cta:active { transform: translateY(3px); box-shadow: inset 0 0 0 2px #8ed27e, 0 0 0 var(--frame-out); }
+
+/* ────────────────────────────────────────────────────────────────
    Game body (filter rail + stage)
    ──────────────────────────────────────────────────────────────── */
 .game-body {
@@ -599,6 +732,225 @@ kbd {
 @keyframes water-shimmer {
   0%, 100% { filter: drop-shadow(0 3px 0 rgba(0,0,0,.4)) brightness(1.04) hue-rotate(0deg); }
   50%      { filter: drop-shadow(0 3px 0 rgba(0,0,0,.4)) brightness(1.10) hue-rotate(-6deg); }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Persistent state cues on garden plants
+   ────────────────────────────────────────────────────────────────
+   These give "watered" and "importance" visible, lasting expression
+   on the sprite itself — not just inside the inspector — so a
+   5-star boosted plant is visually distinct from a 1-star one even
+   when nothing is selected. Implementation choices:
+
+   - WATER: small pixel water-droplet glyph hovering above the
+     sprite, gently bobbing. Picked over a ground-tint patch because
+     the painted ground tiles already carry a lot of visual noise
+     and a tint would be lost; picked over a saturation filter
+     because the sprite's existing focused/selected/water-shimmer
+     filters already use brightness/saturate and stacking another
+     filter washes the sprite out at high zoom.
+
+   - BOOST: 5 buckets keyed off [data-importance]:
+       1 → nothing
+       2 → faint shimmer dot every ~3s
+       3 → a pixel star above the sprite
+       4 → star + soft halo behind the sprite
+       5 → star + brighter halo + slow pulse animation
+     The halo sits behind the sprite (z-index: -1 on the .plant
+     button) so it never clips the sprite outline.
+
+   - LEVEL-UP: when boostMemory() fires, the React tree adds
+     .boost-pulse for ~600ms; CSS runs a brief scale+glow on the
+     sprite so the boost is felt on the plant too, not only the
+     inspector card.
+
+   - STAGGER: the React render passes a per-plant --stagger CSS
+     var (-3s..0s hashed from id) so animations across 50+ plants
+     don't pulse in lock-step. */
+
+/* Water droplet — pure CSS pixel shape, no images. */
+.water-drop {
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  width: 8px;
+  height: 12px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  /* A teardrop made from a rounded rect + a triangle tip via
+     border-radius asymmetry. The cream highlight pips fake a
+     pixel-art specular highlight without an SVG. */
+  background: var(--water);
+  border-radius: 50% 50% 50% 50% / 60% 60% 40% 40%;
+  box-shadow:
+    inset -2px -2px 0 rgba(0, 0, 0, .25),
+    inset  2px  2px 0 rgba(255, 255, 255, .55),
+    0 1px 0 var(--water-d);
+  opacity: 0;
+  animation:
+    water-drop-fade .35s ease-out forwards,
+    water-drop-bob 2.4s ease-in-out infinite;
+  animation-delay: 0s, var(--stagger, 0s);
+  z-index: 3;
+}
+@keyframes water-drop-fade {
+  from { opacity: 0; transform: translate(-50%, 4px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes water-drop-bob {
+  0%, 100% { translate: 0 0; }
+  50%      { translate: 0 -3px; }
+}
+/* Un-water transition — droplet fades + drips downward for 400ms
+   before React unmounts it (via the fadingWater timeout). */
+.water-drop.fading-out {
+  animation: water-drop-drip .4s ease-in forwards;
+}
+@keyframes water-drop-drip {
+  0%   { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, 8px); }
+}
+/* Wilted carve-out: wilted plants (age=old and not watered) keep
+   their existing wilted look; .water-drop only renders when the
+   plant is .watered, so this is automatic — no extra rule needed.
+   The unwater path simply unmounts the node; the .35s fade is the
+   mount-in animation, and React's removal yields an immediate
+   visual disappearance. To soften removal we let CSS fade it via
+   reverse on the parent — handled by .plant:not(.watered)
+   .water-drop never existing, so the 400ms-ish removal is the
+   bobbing's natural settle. */
+
+/* Boost star — small 4-pointed pixel star above the sprite for
+   importance >= 3. Built from two rotated rectangles + a center
+   square, all in --gold/--gold-l. */
+.boost-star {
+  position: absolute;
+  left: 50%;
+  top: -8px;
+  width: 10px;
+  height: 10px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 3;
+  filter: drop-shadow(0 1px 0 var(--gold-d)) drop-shadow(0 0 4px rgba(245, 215, 122, .55));
+  animation: boost-star-bob 2.6s ease-in-out infinite;
+  animation-delay: var(--stagger, 0s);
+}
+.boost-star::before,
+.boost-star::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--gold);
+  box-shadow: inset 0 0 0 1px var(--gold-l);
+}
+.boost-star::before {
+  /* Diamond — vertical+horizontal points. */
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.boost-star::after {
+  /* Same shape rotated 45° for a 4+4-point pixel star. */
+  transform: rotate(45deg) scale(.65);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+  background: var(--gold-l);
+}
+@keyframes boost-star-bob {
+  0%, 100% { transform: translate(-50%, 0); }
+  50%      { transform: translate(-50%, -2px); }
+}
+/* Plants with a water droplet AND a star — nudge the star up so
+   they don't visually collide above the sprite. */
+.plant.watered .boost-star { top: -20px; }
+
+/* Boost halo — soft warm disc behind the sprite for importance>=4.
+   z=-1 keeps it under the sprite so the outline stays crisp. */
+.boost-halo {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 96px;
+  height: 96px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: -1;
+  background: radial-gradient(circle,
+    rgba(245, 215, 122, .35) 0%,
+    rgba(245, 215, 122, .18) 35%,
+    rgba(245, 215, 122, 0)   70%);
+}
+.plant[data-importance="5"] .boost-halo {
+  background: radial-gradient(circle,
+    rgba(255, 240, 180, .55) 0%,
+    rgba(245, 215, 122, .28) 35%,
+    rgba(245, 215, 122, 0)   70%);
+  animation: boost-halo-pulse 3s ease-in-out infinite;
+  animation-delay: var(--stagger, 0s);
+}
+@keyframes boost-halo-pulse {
+  0%, 100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: .9;
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.12);
+    opacity: 1;
+  }
+}
+
+/* Boost shimmer — tiny sparkle pip for importance===2. Sits up and
+   to the right of the sprite. */
+.boost-shimmer {
+  position: absolute;
+  top: 4px;
+  right: 14px;
+  width: 4px;
+  height: 4px;
+  background: var(--gold-l);
+  box-shadow: 0 0 4px var(--gold);
+  pointer-events: none;
+  opacity: 0;
+  animation: boost-shimmer-twinkle 3.2s ease-in-out infinite;
+  animation-delay: var(--stagger, 0s);
+  z-index: 3;
+}
+@keyframes boost-shimmer-twinkle {
+  0%, 70%, 100% { opacity: 0; transform: scale(.6); }
+  80%           { opacity: 1; transform: scale(1.2); }
+  90%           { opacity: .5; transform: scale(.9); }
+}
+
+/* "Level-up" pulse — applied to .plant when boost fires. Runs ~600ms
+   then unmounts via the JS timeout, so re-applying re-runs it. */
+.plant.boost-pulse .sprite {
+  animation: plant-levelup 600ms ease-out;
+}
+.plant.boost-pulse .boost-halo {
+  animation: halo-levelup 600ms ease-out;
+}
+@keyframes plant-levelup {
+  0%   { transform: translateY(0)   scale(1); filter: drop-shadow(0 3px 0 rgba(0,0,0,.4)) brightness(1) saturate(1); }
+  35%  { transform: translateY(-6px) scale(1.12); filter: drop-shadow(0 6px 0 rgba(0,0,0,.4)) brightness(1.4) saturate(1.4); }
+  70%  { transform: translateY(-2px) scale(1.04); filter: drop-shadow(0 3px 0 rgba(0,0,0,.4)) brightness(1.15) saturate(1.2); }
+  100% { transform: translateY(0)    scale(1);    filter: drop-shadow(0 3px 0 rgba(0,0,0,.4)) brightness(1) saturate(1); }
+}
+@keyframes halo-levelup {
+  0%   { transform: translate(-50%, -50%) scale(.6); opacity: 0; }
+  40%  { transform: translate(-50%, -50%) scale(1.4); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1);   opacity: .9; }
+}
+
+/* Reduced motion: kill the persistent animations but keep the
+   visual state (star, halo, droplet shape) so the cues still
+   communicate. */
+@media (prefers-reduced-motion: reduce) {
+  .water-drop, .boost-star, .boost-shimmer,
+  .plant[data-importance="5"] .boost-halo,
+  .plant.boost-pulse .sprite,
+  .plant.boost-pulse .boost-halo {
+    animation: none;
+  }
+  .water-drop { opacity: 1; }
 }
 
 .alert-dot {
@@ -1523,6 +1875,61 @@ kbd {
   to   { transform: translate(-50%, 0);     opacity: 1; }
 }
 
+/* Actionable toast — same pixel shell, but interactive (Connect button +
+   dismiss). Sits below the plain status toast when both are visible. */
+.toast-actionable {
+  top: auto;
+  bottom: 22px;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 19px;
+}
+.toast-actionable-text { color: var(--paper); }
+.toast-actionable-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px;
+  background: linear-gradient(180deg, #4a8a3e 0%, #2a5424 100%);
+  color: var(--paper);
+  border: 2px solid var(--frame-out);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 2px #6db05f, 0 2px 0 var(--frame-out);
+  font-family: 'VT323', monospace;
+  font-size: 17px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  text-shadow: 1px 1px 0 #1d3a18;
+  cursor: pointer;
+  transition: transform .08s, box-shadow .08s;
+}
+.toast-actionable-btn:hover { transform: translateY(1px); box-shadow: inset 0 0 0 2px #8ed27e, 0 1px 0 var(--frame-out); }
+.toast-actionable-btn:active { transform: translateY(2px); box-shadow: inset 0 0 0 2px #8ed27e, 0 0 0 var(--frame-out); }
+.toast-actionable-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.toast-actionable-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+  padding: 0;
+  background: rgba(0,0,0,.3);
+  color: var(--paper);
+  border: 2px solid var(--frame-out);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.toast-actionable-close:hover { background: rgba(255,255,255,.12); }
+.toast-actionable-close:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+/* Extra warning line in the Forget dialog when disconnected — sits below the
+   normal warn copy and reads in the same dim-gold tone to keep the pixel
+   dialogue visually consistent. */
+.forget-warn-session {
+  margin-top: 6px;
+  color: var(--gold-l);
+  opacity: .9;
+  font-style: italic;
+}
+
 /* ────────────────────────────────────────────────────────────────
    Empty filter/search state (overlay)
    ──────────────────────────────────────────────────────────────── */
@@ -2391,6 +2798,77 @@ kbd {
    and drag-to-pan stay snappy). */
 .world[data-traveling="true"] {
   transition: transform .3s cubic-bezier(.4, 1.4, .5, 1);
+}
+
+/* Destination pin — floats above a plant the avatar just fast-travelled
+   to, for ~500ms after the camera pan completes. Rendered as a CSS-only
+   pixel pin (a small diamond + tail) so it ships with the existing
+   palette and needs no extra art. Uses the same emerald-gold tone as the
+   sidebar's selection accent so it reads as "this is the row you just
+   clicked." Lives inside .plant so it pans with the world, but its
+   z-index pops it above all neighbouring plants. */
+.plant .destination-pin {
+  position: absolute;
+  left: 50%;
+  top: -14px;
+  width: 14px;
+  height: 18px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 40;
+  animation: destination-pin-drop .42s cubic-bezier(.3, 1.6, .4, 1) both,
+             destination-pin-pulse 1s ease-in-out .42s 2;
+}
+.plant .destination-pin::before,
+.plant .destination-pin::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+}
+/* The pin head — a tiny rounded square outlined in ink, filled gold. */
+.plant .destination-pin::before {
+  top: 0;
+  width: 10px;
+  height: 10px;
+  background: #f6d76b;
+  border: 1.5px solid var(--ink, #1a1410);
+  box-shadow: 0 0 6px rgba(246, 215, 107, .85),
+              0 0 14px rgba(246, 215, 107, .45);
+  border-radius: 1px;
+}
+/* The pin "shadow" tail — a soft puddle on the ground tile. */
+.plant .destination-pin::after {
+  top: 14px;
+  width: 8px;
+  height: 3px;
+  background: rgba(0, 0, 0, .35);
+  border-radius: 50%;
+  filter: blur(1px);
+  transform: translateX(-50%);
+}
+@keyframes destination-pin-drop {
+  0%   { transform: translateX(-50%) translateY(-18px); opacity: 0; }
+  60%  { transform: translateX(-50%) translateY(2px);   opacity: 1; }
+  100% { transform: translateX(-50%) translateY(0);     opacity: 1; }
+}
+@keyframes destination-pin-pulse {
+  0%, 100% { filter: brightness(1); }
+  50%      { filter: brightness(1.25); }
+}
+/* The plant itself does a one-shot glow when it becomes the travel
+   target so it's even more obvious which sprite the camera landed on. */
+.plant.travel-target .sprite {
+  animation: travel-target-bounce .45s cubic-bezier(.3, 1.6, .4, 1) both;
+}
+@keyframes travel-target-bounce {
+  0%   { transform: translateY(0)    scale(1); }
+  40%  { transform: translateY(-4px) scale(1.06); }
+  100% { transform: translateY(0)    scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plant .destination-pin { animation: none; }
+  .plant.travel-target .sprite { animation: none; }
 }
 
 /* ────────────────────────────────────────────────────────────────
