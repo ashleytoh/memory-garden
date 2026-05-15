@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Upload, Sparkles, Droplets, Archive, Search, FolderOpen, RefreshCw, Unplug, X, HelpCircle, Home, Pencil, Check, ChevronLeft, ListFilter } from 'lucide-react';
+import { Upload, Sparkles, Droplets, Archive, Search, FolderOpen, RefreshCw, Unplug, X, HelpCircle, Home, Pencil, Check, ChevronLeft, ListFilter, MoreHorizontal, Trash2 } from 'lucide-react';
 import {
   type ConnectedMemory,
   clearPersistedHandle,
   ensurePermission,
+  hardDeleteMemoryFile,
   isFsAccessSupported,
   loadPersistedHandle,
   pickMemoryDirectory,
@@ -36,6 +37,13 @@ type MemorySeed = {
   age: 'fresh' | 'growing' | 'old';
   watered: boolean;
   archived: boolean;
+  /** Unix ms when the memory first appeared in the garden (or in the on-disk
+   *  frontmatter for connected directories). Falls back to Date.now() for
+   *  legacy entries lacking a `first_seen` key. */
+  firstSeen: number;
+  /** Unix ms of the most recent mutation (water / boost / edit / compost-toggle).
+   *  Equals `firstSeen` for memories that have never been touched. */
+  lastUpdated: number;
   /** Tutorial memories spawn near PLAYER_START and are cleared on first import. */
   isTutorial?: boolean;
 };
@@ -248,22 +256,51 @@ const GARDEN_SPOTS: ReadonlyArray<{ row: number; col: number }> = (() => {
   return chosen;
 })();
 
-/* Assign each non-archived memory a unique stable spot based on its index in
-   the full memories array, so filtering/searching never reshuffles plants.
-   If we run out of distinct spots, additional memories overflow off-stage
-   (they remain in state and the inspector, but don't render in the scene). */
-function layoutMemories(seeds: MemorySeed[]): PlacedMemory[] {
-  let nonArchivedIndex = 0;
-  let tutorialIndex = 0;
+/* Assign each non-archived memory a unique stable spot keyed by id. When a
+   memory is removed (Compost or Forget), its spot is freed for the next new
+   memory rather than shifting every later plant to a new tile. Filtering /
+   searching never reshuffles plants because spots are remembered, not
+   re-derived from array index.
+
+   The caller passes mutable maps (one for the garden, one for the tutorial
+   ring); we keep them in a ref so assignments persist across renders. */
+type SpotMap = Map<string, number>;
+function layoutMemories(
+  seeds: MemorySeed[],
+  gardenMap: SpotMap,
+  tutorialMap: SpotMap,
+): PlacedMemory[] {
+  const seedIds = new Set(seeds.map((m) => m.id));
+  // Drop assignments for memories that are no longer present so their spots
+  // are freed.
+  for (const id of Array.from(gardenMap.keys())) {
+    if (!seedIds.has(id)) gardenMap.delete(id);
+  }
+  for (const id of Array.from(tutorialMap.keys())) {
+    if (!seedIds.has(id)) tutorialMap.delete(id);
+  }
+  const usedGarden = new Set<number>(gardenMap.values());
+  const usedTutorial = new Set<number>(tutorialMap.values());
+  function takeNext(used: Set<number>, max: number): number | null {
+    for (let i = 0; i < max; i++) {
+      if (!used.has(i)) { used.add(i); return i; }
+    }
+    return null;
+  }
   const placed: PlacedMemory[] = [];
   for (const m of seeds) {
     if (m.archived) continue;
-    let spot: { row: number; col: number } | undefined;
-    if (m.isTutorial) {
-      spot = TUTORIAL_SPOTS[tutorialIndex++];
-    } else {
-      spot = GARDEN_SPOTS[nonArchivedIndex++];
+    const map = m.isTutorial ? tutorialMap : gardenMap;
+    const used = m.isTutorial ? usedTutorial : usedGarden;
+    const arr = m.isTutorial ? TUTORIAL_SPOTS : GARDEN_SPOTS;
+    let idx = map.get(m.id);
+    if (idx === undefined) {
+      const next = takeNext(used, arr.length);
+      if (next === null) continue; // overflow — no spot available
+      idx = next;
+      map.set(m.id, idx);
     }
+    const spot = arr[idx];
     if (spot) placed.push({ ...m, ...spot });
   }
   return placed;
@@ -376,6 +413,7 @@ function titleFrom(text: string): string {
 }
 
 function parseMemoryFile(name: string, content: string): MemorySeed[] {
+  const now = Date.now();
   return content
     .split(/\r?\n/)
     .map((raw, index) => ({ raw: raw.trim(), line: index + 1 }))
@@ -403,6 +441,8 @@ function parseMemoryFile(name: string, content: string): MemorySeed[] {
         age: line < 3 ? 'old' : line < 6 ? 'growing' : 'fresh',
         watered: false,
         archived: false,
+        firstSeen: now,
+        lastUpdated: now,
       } satisfies MemorySeed;
     });
 }
@@ -426,6 +466,12 @@ function memoryFromConnected(c: ConnectedMemory): MemorySeed {
     : Math.min(5, 1 + Number(/remember|important|goal|project|open loop/i.test(text)) + (kindFromMeta === 'project' ? 1 : 0));
   const ageDays = (Date.now() - c.lastModified) / 86_400_000;
   const age: MemorySeed['age'] = ageDays > 30 ? 'old' : ageDays > 7 ? 'growing' : 'fresh';
+  // Prefer disk values; fall back to the file's lastModified (closest stand-in
+  // we have for a real creation timestamp), and finally to Date.now() so legacy
+  // files without these keys still get sensible relative-time output.
+  const now = Date.now();
+  const firstSeen = parseTimestampMeta(c.meta.first_seen) ?? c.lastModified ?? now;
+  const lastUpdated = parseTimestampMeta(c.meta.last_updated) ?? c.lastModified ?? firstSeen;
   return {
     id: `dir:${c.fileName}`,
     title: titleFrom(titleSource) || titleSource.slice(0, 64) || 'Untitled memory',
@@ -438,7 +484,26 @@ function memoryFromConnected(c: ConnectedMemory): MemorySeed {
     age,
     watered: !!c.meta.last_watered,
     archived: false,
+    firstSeen,
+    lastUpdated,
   };
+}
+
+/* Lenient ISO-or-millis parser for the firstSeen/lastUpdated frontmatter keys.
+   We persist them as ISO strings for human-readability, but a number is also
+   accepted in case the file was hand-edited. Returns null for unparseable
+   input so the caller can pick a fallback. */
+function parseTimestampMeta(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Pure-number form (Unix ms).
+  if (/^\d+$/.test(trimmed)) {
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  const ms = Date.parse(trimmed);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /* ─── Codex MEMORY.md parser ──────────────────────────────────────
@@ -469,8 +534,9 @@ function parseCodexFile(name: string, content: string): MemorySeed[] {
   let bulletIdx = 0;
   let section: '' | 'pref' | 'knowledge' | 'failures' | 'skip' = '';
 
-  function push(s: Omit<MemorySeed, 'age' | 'archived' | 'watered'>) {
-    seeds.push({ ...s, age: 'fresh', archived: false, watered: false });
+  const now = Date.now();
+  function push(s: Omit<MemorySeed, 'age' | 'archived' | 'watered' | 'firstSeen' | 'lastUpdated'>) {
+    seeds.push({ ...s, age: 'fresh', archived: false, watered: false, firstSeen: now, lastUpdated: now });
   }
 
   for (let i = 0; i < lines.length; i++) {
@@ -550,6 +616,38 @@ function parseCodexFile(name: string, content: string): MemorySeed[] {
   }
 
   return seeds;
+}
+
+/* Tiny pure-function relative-time formatter. Avoids pulling in date-fns /
+   dayjs — we only need 7 thresholds. "just now" is anything < 30s. */
+function formatRelativeTime(targetMs: number, nowMs: number = Date.now()): string {
+  const diff = Math.max(0, nowMs - targetMs);
+  const s = Math.floor(diff / 1000);
+  if (s < 30) return 'just now';
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} ${m === 1 ? 'minute' : 'minutes'} ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} ${h === 1 ? 'hour' : 'hours'} ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d} ${d === 1 ? 'day' : 'days'} ago`;
+  const w = Math.floor(d / 7);
+  if (w < 5) return `${w} ${w === 1 ? 'week' : 'weeks'} ago`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo} ${mo === 1 ? 'month' : 'months'} ago`;
+  const y = Math.floor(d / 365);
+  return `${y} ${y === 1 ? 'year' : 'years'} ago`;
+}
+
+/* Absolute date for the tooltip on the relative-time row. Uses Intl so it
+   respects the user's locale instead of forcing en-US. */
+const ABS_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
+function formatAbsoluteTime(ms: number): string {
+  try { return ABS_DATE_FORMAT.format(new Date(ms)); }
+  catch { return new Date(ms).toISOString(); }
 }
 
 function gardenReflection(memory: MemorySeed) {
@@ -747,6 +845,17 @@ const MOOD_LABEL: Record<Mood, string> = {
   neutral: 'Quiet',
 };
 
+/* Mood dot color for the sidebar list. Mirrors the existing palette tokens
+   so the dot reads as the same family as the dialogue mood label. */
+const MOOD_COLOR: Record<Mood, string> = {
+  joy: '#f5d77a',     // gold
+  care: '#e85a8c',    // rose
+  curious: '#c89efb', // magic
+  stress: '#ff5b69',  // alert
+  focus: '#6fd3ff',   // water
+  neutral: '#c8a890', // dim taupe
+};
+
 /* — Player sprite — 4 facings, 2-frame walk — */
 
 function Player({ facing, frame }: { facing: Direction; frame: number }) {
@@ -822,6 +931,26 @@ function App() {
   // pans the camera to it once it shows up in `placed`.
   const [pendingPanId, setPendingPanId] = useState<string | null>(null);
 
+  // Memory list sidebar — open by default on desktop, collapsed below 1024.
+  // Persisted under 'mg.sidebar-open' so a user's preference survives reloads.
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('mg.sidebar-open');
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+    } catch { /* ignore */ }
+    return typeof window !== 'undefined' && window.innerWidth >= 1024;
+  });
+  useEffect(() => {
+    try { localStorage.setItem('mg.sidebar-open', String(sidebarOpen)); } catch { /* ignore */ }
+  }, [sidebarOpen]);
+  // Hover state — when a sidebar row is hovered, the corresponding plant in
+  // the scene glows. Overrides the proximity-based `focused` while set.
+  const [hoveredMemoryId, setHoveredMemoryId] = useState<string | null>(null);
+  // When fast-travelling from the sidebar, briefly enable a transform
+  // transition on the world so the camera pan reads as a glide.
+  const [isTraveling, setIsTraveling] = useState(false);
+
   // Close the Import help popover on Esc or click outside its wrapper.
   useEffect(() => {
     if (!showImportHelp) return;
@@ -857,6 +986,12 @@ function App() {
     previewMood: Mood | null;
   } | null>(null);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  /* Forget action: when non-null, the destructive-confirm modal is open and
+     references the memory id. Kept as an id (not the whole memory) so the
+     modal closes itself if the underlying memory disappears for any reason
+     (e.g. an external disk reload removed the file). */
+  const [forgetTargetId, setForgetTargetId] = useState<string | null>(null);
 
   const [playerPos, setPlayerPos] = useState(PLAYER_START);
   const [facing, setFacing] = useState<Direction>('down');
@@ -966,9 +1101,16 @@ function App() {
     setRailTip(null);
   }
 
-  // Layout: assign every non-archived memory a stable spot, then filter.
-  // This keeps plant positions steady across search and filter changes.
-  const allPlaced = useMemo<PlacedMemory[]>(() => layoutMemories(memories), [memories]);
+  // Layout: assign every non-archived memory a stable spot keyed by id, then
+  // filter. This keeps plant positions steady across search, filter, AND
+  // single-memory removals (Compost / Forget) — only the removed memory's
+  // tile is freed.
+  const gardenSpotMapRef = useRef<SpotMap>(new Map());
+  const tutorialSpotMapRef = useRef<SpotMap>(new Map());
+  const allPlaced = useMemo<PlacedMemory[]>(
+    () => layoutMemories(memories, gardenSpotMapRef.current, tutorialSpotMapRef.current),
+    [memories],
+  );
   const placed = useMemo<PlacedMemory[]>(
     () =>
       allPlaced.filter(
@@ -979,8 +1121,13 @@ function App() {
     [allPlaced, filter, query],
   );
 
-  // Focused = memory in front of player (preferring the facing direction).
+  // Focused = memory in front of player (preferring the facing direction),
+  // or a memory the user is hovering in the sidebar (preview override).
   const focused = useMemo<PlacedMemory | null>(() => {
+    if (hoveredMemoryId) {
+      const hovered = placed.find((m) => m.id === hoveredMemoryId);
+      if (hovered) return hovered;
+    }
     const tryDir = (dir: Direction) => {
       const v = DIR_VEC[dir];
       const fr = playerPos.row + v.dr;
@@ -995,7 +1142,7 @@ function App() {
       tryDir('right') ??
       null
     );
-  }, [placed, playerPos, facing]);
+  }, [placed, playerPos, facing, hoveredMemoryId]);
 
   // Selection is derived from the visible (placed) memories. If the selected
   // memory was just composted or filtered out, the inspector clears so the
@@ -1013,6 +1160,19 @@ function App() {
       setSelectedId(null);
     }
   }, [placed, selectedId]);
+
+  // The Forget modal references the underlying MemorySeed (not the placed
+  // copy) so the modal stays open even if a search/filter would have hidden
+  // the memory. Auto-dismiss if the target id disappears from state.
+  const forgetTarget = useMemo<MemorySeed | undefined>(
+    () => (forgetTargetId ? memories.find((m) => m.id === forgetTargetId) : undefined),
+    [memories, forgetTargetId],
+  );
+  useEffect(() => {
+    if (forgetTargetId && !memories.some((m) => m.id === forgetTargetId)) {
+      setForgetTargetId(null);
+    }
+  }, [memories, forgetTargetId]);
 
   // Refs for keyboard handler closures.
   const posRef = useRef(playerPos);
@@ -1049,9 +1209,17 @@ function App() {
       const tag = el.tagName;
       return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
     };
+    // Sidebar owns its own keys (arrow nav, Enter to fast-travel) when one
+    // of its rows is focused, so the global player-movement handler must not
+    // also fire for the same press.
+    const isInSidebar = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      return !!el?.closest?.('.memory-sidebar');
+    };
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTyping(e.target)) return;
+      if (isInSidebar(e.target)) return;
       if (!startedRef.current) return; // welcome modal owns input until dismissed
       // Use e.code (physical key position) instead of e.key so layouts like
       // AZERTY/Dvorak don't remap W to a left/right motion.
@@ -1250,8 +1418,21 @@ function App() {
     showToast(`${verb} ${parsed.length} memories from ${fileLabel}${skipped}`);
   }
 
-  function updateMemory(id: string, patch: Partial<MemorySeed>) {
-    setMemories((items) => items.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  /* `updateMemory` is the single funnel through which mutations flow (water,
+     boost, edit, compost toggle…). It auto-stamps `lastUpdated` so every
+     mutation refreshes the "Updated <relative time>" row in the inspector.
+     Pass `bumpUpdated: false` for internal patches that shouldn't count as
+     a user-visible update (e.g. reverting after a failed disk write). */
+  function updateMemory(
+    id: string,
+    patch: Partial<MemorySeed>,
+    opts: { bumpUpdated?: boolean } = {},
+  ) {
+    const bump = opts.bumpUpdated !== false;
+    setMemories((items) => items.map((item) => {
+      if (item.id !== id) return item;
+      return { ...item, ...patch, ...(bump ? { lastUpdated: Date.now() } : {}) };
+    }));
   }
 
   /* ─── Connected directory: load / reload / disconnect ─────────── */
@@ -1472,6 +1653,42 @@ function App() {
     ));
   }
 
+  /* Fast-travel from a sidebar click: teleport the avatar to the nearest
+     passable tile adjacent to the chosen memory, pan the camera so the
+     memory is centred (smooth via a temporary transform transition on
+     .world), and open the inspector. We chose teleport over auto-walk
+     because pathfinding around props/water in a 56×32 world would feel
+     laggy and the camera glide already gives spatial continuity. */
+  function fastTravelTo(memory: PlacedMemory) {
+    const target = nearestPassableAdjacent(memory.row, memory.col, placedRef.current);
+    if (!target) return;
+    // Hand keyboard focus back to the world so the user can resume walking
+    // immediately after the click. Without this, focus stays on the clicked
+    // sidebar row and the global keydown handler keeps bailing on it.
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest('.memory-sidebar')) active.blur();
+    // Face the memory after teleport so it becomes the focused plant.
+    const dr = memory.row - target.row;
+    const dc = memory.col - target.col;
+    let dir: Direction = 'down';
+    if (dr < 0) dir = 'up';
+    else if (dr > 0) dir = 'down';
+    else if (dc < 0) dir = 'left';
+    else if (dc > 0) dir = 'right';
+
+    setIsTraveling(true);
+    posRef.current = target;
+    setPlayerPos(target);
+    facingRef.current = dir;
+    setFacing(dir);
+    setCamera(clampCamera(
+      memory.col * TILE + TILE / 2 - VIEWPORT_W / 2,
+      memory.row * TILE + TILE / 2 - VIEWPORT_H / 2,
+    ));
+    setSelectedId(memory.id);
+    window.setTimeout(() => setIsTraveling(false), 320);
+  }
+
   // `C` key recenters the camera on the player. Wired up alongside the
   // existing keyboard listener block via a ref so the listener stays
   // mount-once.
@@ -1495,9 +1712,16 @@ function App() {
     // its own onClick fire.
     if ((e.target as Element).closest('.plant')) return;
     // Clicking the game scene should always restore keyboard movement, even
-    // if focus was left in the search box or another input.
+    // if focus was left in the search box, a sidebar row, or another input.
     const active = document.activeElement as HTMLElement | null;
-    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+    if (
+      active && (
+        active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.isContentEditable ||
+        active.closest('.memory-sidebar')
+      )
+    ) {
       active.blur();
     }
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -1530,6 +1754,22 @@ function App() {
     dragRef.current = null;
   }
 
+  /* Build a frontmatter patch that always includes `last_updated`, so the
+     "Updated <relative time>" row in the inspector stays accurate after
+     reload. Each action handler spreads in its own keys on top.
+
+     If `firstSeenMs` is provided we also stamp `first_seen` — used the first
+     time a connected memory is touched so the on-disk value matches what the
+     inspector shows. Subsequent mutations leave it alone. */
+  function stampedPatch(
+    extra: Record<string, string | null>,
+    firstSeenMs?: number,
+  ): Record<string, string | null> {
+    const out: Record<string, string | null> = { ...extra, last_updated: new Date().toISOString() };
+    if (firstSeenMs !== undefined) out.first_seen = new Date(firstSeenMs).toISOString();
+    return out;
+  }
+
   async function waterMemory() {
     if (!selected) return;
     const next = !selected.watered;
@@ -1537,14 +1777,14 @@ function App() {
     if (next) setSplashKey((k) => k + 1);
     if (dirHandle && isConnectedMemory(selected)) {
       try {
-        const result = await writeMemoryFile(dirHandle, selected.source, {
+        const result = await writeMemoryFile(dirHandle, selected.source, stampedPatch({
           last_watered: next ? new Date().toISOString() : null,
-        });
+        }, selected.firstSeen));
         fileMtimesRef.current.set(selected.source, result.lastModified);
       } catch {
         showToast('Could not save watering to disk.');
-        // Revert local state to match disk.
-        updateMemory(selected.id, { watered: !next });
+        // Revert local state to match disk; don't bump lastUpdated for the revert.
+        updateMemory(selected.id, { watered: !next, lastUpdated: selected.lastUpdated }, { bumpUpdated: false });
       }
     }
   }
@@ -1560,13 +1800,17 @@ function App() {
     setImportanceFlash((n) => n + 1);
     if (dirHandle && isConnectedMemory(selected)) {
       try {
-        const result = await writeMemoryFile(dirHandle, selected.source, {
+        const result = await writeMemoryFile(dirHandle, selected.source, stampedPatch({
           importance: String(next),
-        });
+        }, selected.firstSeen));
         fileMtimesRef.current.set(selected.source, result.lastModified);
       } catch {
         showToast('Could not save importance to disk.');
-        updateMemory(selected.id, { importance: selected.importance });
+        updateMemory(
+          selected.id,
+          { importance: selected.importance, lastUpdated: selected.lastUpdated },
+          { bumpUpdated: false },
+        );
       }
     }
   }
@@ -1576,6 +1820,7 @@ function App() {
     const id = selected.id;
     const sourceFile = selected.source;
     const title = selected.title;
+    const prevLastUpdated = selected.lastUpdated;
     const wasConnected = !!dirHandle && isConnectedMemory(selected);
     updateMemory(id, { archived: true });
     setSelectedId(null);
@@ -1587,12 +1832,48 @@ function App() {
         return;
       } catch {
         // Revert: un-archive locally so the memory doesn't silently vanish.
-        updateMemory(id, { archived: false });
+        updateMemory(id, { archived: false, lastUpdated: prevLastUpdated }, { bumpUpdated: false });
         showToast('Could not move file to .compost/.');
         return;
       }
     }
     showToast(`Composted "${title.slice(0, 36)}${title.length > 36 ? '…' : ''}"`);
+  }
+
+  /* Forget = irreversible hard delete. Unlike Compost there is no `.compost/`
+     copy and no archived-flag toggle; the memory is removed from state and,
+     when connected, the source file is unlinked from disk. Tutorial memories
+     are removed from state only (no disk write). */
+  async function forgetMemory(target?: MemorySeed) {
+    const m = target ?? selected;
+    if (!m) return;
+    const id = m.id;
+    const sourceFile = m.source;
+    const title = m.title;
+    const wasConnected = !!dirHandle && isConnectedMemory(m) && !m.isTutorial;
+    // Drop the inspector and remove from state immediately so the UI doesn't
+    // flash a "ghost" of the memory while the file delete is in flight.
+    setSelectedId(null);
+    setEditing(null);
+    setMemories((items) => items.filter((m) => m.id !== id));
+    if (wasConnected) {
+      try {
+        await hardDeleteMemoryFile(dirHandle!, sourceFile);
+        fileMtimesRef.current.delete(sourceFile);
+        showToast(`Forgot "${title.slice(0, 36)}${title.length > 36 ? '…' : ''}"`);
+      } catch {
+        showToast('Could not delete the source file. Local state cleared.');
+      }
+    } else {
+      showToast(`Forgot "${title.slice(0, 36)}${title.length > 36 ? '…' : ''}"`);
+    }
+    // Return focus to the scene so arrow keys move the avatar again. The
+    // global keyboard handler listens on window and only suppresses input
+    // when focus is inside an INPUT / TEXTAREA / contentEditable — blurring
+    // the modal's button (just-focused before the modal unmounted) is enough
+    // to restore movement.
+    const active = document.activeElement as HTMLElement | null;
+    if (active && active !== document.body) active.blur();
   }
 
   /* ─── Inline edit: open / change / re-detect / save / cancel ────── */
@@ -1661,19 +1942,24 @@ function App() {
         !target.isTutorial
       ) {
         try {
-          const result = await writeMemoryFile(dirHandle, target.source, {
+          const result = await writeMemoryFile(dirHandle, target.source, stampedPatch({
             name: nextTitle,
             description: nextText,
-          });
+          }, target.firstSeen));
           fileMtimesRef.current.set(target.source, result.lastModified);
         } catch {
           // Revert local edit if the disk write fails.
-          updateMemory(editing.id, {
-            title: target.title,
-            text: target.text,
-            kind: target.kind,
-            mood: target.mood,
-          });
+          updateMemory(
+            editing.id,
+            {
+              title: target.title,
+              text: target.text,
+              kind: target.kind,
+              mood: target.mood,
+              lastUpdated: target.lastUpdated,
+            },
+            { bumpUpdated: false },
+          );
           showToast('Could not save edits to disk.');
           return;
         }
@@ -1868,6 +2154,20 @@ function App() {
             })}
           </nav>
 
+          <MemorySidebar
+            open={sidebarOpen}
+            onToggle={() => setSidebarOpen((v) => !v)}
+            placed={placed}
+            totalCount={placed.length}
+            filter={filter}
+            query={query}
+            onClearFilters={() => { setFilter('all'); setQuery(''); }}
+            selectedId={selectedId}
+            hoveredMemoryId={hoveredMemoryId}
+            onHover={setHoveredMemoryId}
+            onPick={fastTravelTo}
+          />
+
           <main
             className="stage"
             aria-label="Pixel memory garden"
@@ -1901,6 +2201,7 @@ function App() {
               <div
                 className="world scene-painted"
                 data-importing={isImporting ? 'true' : undefined}
+                data-traveling={isTraveling ? 'true' : undefined}
                 style={{
                   width: WORLD_W,
                   height: WORLD_H,
@@ -2087,6 +2388,7 @@ function App() {
           onWater={waterMemory}
           onBoost={boostMemory}
           onCompost={compostMemory}
+          onForget={() => setForgetTargetId(selected?.id ?? null)}
           onClose={() => { setEditing(null); setSelectedId(null); }}
           onStartEdit={startEdit}
           onCancelEdit={cancelEdit}
@@ -2094,6 +2396,18 @@ function App() {
           onEditChange={(patch) => setEditing((e) => (e ? { ...e, ...patch } : e))}
           onRedetectKind={redetectKind}
         />
+
+        {forgetTarget && (
+          <ForgetDialog
+            memory={forgetTarget}
+            onCancel={() => setForgetTargetId(null)}
+            onConfirm={() => {
+              const m = forgetTarget;
+              setForgetTargetId(null);
+              void forgetMemory(m);
+            }}
+          />
+        )}
 
         {toast && (
           <div className="toast" role="status" aria-live="polite">
@@ -2126,6 +2440,139 @@ function App() {
         />
       )}
     </>
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Memory list sidebar
+   ────────────────────────────────────────────────────────────── */
+
+function MemorySidebar({
+  open,
+  onToggle,
+  placed,
+  totalCount,
+  filter,
+  query,
+  onClearFilters,
+  selectedId,
+  hoveredMemoryId,
+  onHover,
+  onPick,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  placed: PlacedMemory[];
+  totalCount: number;
+  filter: MemoryKind | 'all';
+  query: string;
+  onClearFilters: () => void;
+  selectedId: string | null;
+  hoveredMemoryId: string | null;
+  onHover: (id: string | null) => void;
+  onPick: (m: PlacedMemory) => void;
+}) {
+  const hasFilter = filter !== 'all' || query.trim() !== '';
+  return (
+    <aside
+      className="memory-sidebar"
+      data-open={open ? 'true' : 'false'}
+      aria-label="Memory list"
+    >
+      <button
+        type="button"
+        className="memory-sidebar-toggle"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-label={open ? 'Collapse memory list' : 'Expand memory list'}
+        title={open ? 'Hide memory list' : 'Show memory list'}
+      >
+        {open ? <ChevronLeft size={14} /> : <ListFilter size={14} />}
+      </button>
+
+      {open && (
+        <>
+          <div className="memory-sidebar-header">
+            <span className="memory-sidebar-count">
+              {totalCount} {totalCount === 1 ? 'memory' : 'memories'}
+            </span>
+            {hasFilter && (
+              <button
+                type="button"
+                className="memory-sidebar-clear"
+                onClick={onClearFilters}
+                title="Clear search + filter"
+              >
+                <X size={10} strokeWidth={3} /> Clear
+              </button>
+            )}
+          </div>
+          <div
+            className="memory-sidebar-list"
+            role="listbox"
+            aria-label="Memories matching current filter"
+          >
+            {placed.length === 0 && (
+              <div className="memory-sidebar-empty">
+                No memories match. {hasFilter ? 'Clear filters to see them all.' : ''}
+              </div>
+            )}
+            {placed.map((m) => {
+              const Sprite = KIND_META[m.kind].Sprite;
+              const isSelected = selectedId === m.id;
+              const isHovered = hoveredMemoryId === m.id;
+              return (
+                <button
+                  type="button"
+                  key={m.id}
+                  role="option"
+                  aria-selected={isSelected}
+                  className={`memory-sidebar-row ${isSelected ? 'is-selected' : ''} ${isHovered ? 'is-hovered' : ''}`}
+                  onMouseEnter={() => onHover(m.id)}
+                  onMouseLeave={() => onHover(null)}
+                  onFocus={() => onHover(m.id)}
+                  onBlur={() => onHover(null)}
+                  onClick={() => onPick(m)}
+                  onKeyDown={(e) => {
+                    // Browser already fires onClick on Enter for buttons.
+                    // We only handle Arrow nav here. The global movement
+                    // listener bails on events whose target is inside the
+                    // sidebar, so these arrows don't leak to the avatar.
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      const next = e.currentTarget.nextElementSibling as HTMLElement | null;
+                      next?.focus();
+                    } else if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      const prev = e.currentTarget.previousElementSibling as HTMLElement | null;
+                      if (prev && prev.classList.contains('memory-sidebar-row')) prev.focus();
+                    }
+                  }}
+                >
+                  <span className="memory-sidebar-icon" aria-hidden>
+                    <Sprite />
+                  </span>
+                  <span className="memory-sidebar-text">
+                    <span className="memory-sidebar-title" title={m.title}>{m.title}</span>
+                    <span className="memory-sidebar-hearts" aria-label={`Importance ${m.importance} of 5`}>
+                      {Array.from({ length: 5 }, (_, i) => (
+                        <span key={i} className={`memory-sidebar-heart ${i < m.importance ? 'on' : ''}`} />
+                      ))}
+                    </span>
+                  </span>
+                  <span
+                    className="memory-sidebar-mood"
+                    style={{ background: MOOD_COLOR[m.mood] }}
+                    aria-label={`Mood: ${MOOD_LABEL[m.mood]}`}
+                    title={MOOD_LABEL[m.mood]}
+                  />
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </aside>
   );
 }
 
@@ -2172,6 +2619,7 @@ function Dialogue({
   onWater,
   onBoost,
   onCompost,
+  onForget,
   onClose,
   onStartEdit,
   onCancelEdit,
@@ -2189,6 +2637,7 @@ function Dialogue({
   onWater: () => void;
   onBoost: () => void;
   onCompost: () => void;
+  onForget: () => void;
   onClose: () => void;
   onStartEdit: () => void;
   onCancelEdit: () => void;
@@ -2196,6 +2645,38 @@ function Dialogue({
   onEditChange: (patch: Partial<EditingState>) => void;
   onRedetectKind: () => void;
 }) {
+  // Overflow menu (currently just Forget). Open state is local to Dialogue —
+  // simple enough to inline rather than thread through the parent.
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const overflowRef = useRef<HTMLDivElement | null>(null);
+  // Tick once a minute so "just now" relative-time labels age into "1 minute
+  // ago", "2 minutes ago", etc. Anchored to component-mount, so the inspector
+  // for a long-open memory stays accurate without polling every second.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => window.clearInterval(id);
+  }, []);
+  useEffect(() => {
+    if (!overflowOpen) return;
+    function onDocDown(e: MouseEvent | KeyboardEvent) {
+      if (e instanceof KeyboardEvent) {
+        if (e.key === 'Escape') setOverflowOpen(false);
+        return;
+      }
+      const node = overflowRef.current;
+      if (node && !node.contains(e.target as Node)) setOverflowOpen(false);
+    }
+    window.addEventListener('mousedown', onDocDown);
+    window.addEventListener('keydown', onDocDown);
+    return () => {
+      window.removeEventListener('mousedown', onDocDown);
+      window.removeEventListener('keydown', onDocDown);
+    };
+  }, [overflowOpen]);
+  // Close the overflow whenever the selected memory changes — otherwise it
+  // would linger over the next memory's header.
+  useEffect(() => { setOverflowOpen(false); }, [selected?.id]);
   if (!selected) {
     return (
       <section className="dialogue" data-empty>
@@ -2236,6 +2717,43 @@ function Dialogue({
   return (
     <section className="dialogue" data-open key={selected.id} data-editing={isEditing || undefined}>
       <div className="dialogue-frame">
+        {/* Header overflow menu (Forget lives here so it stays clearly separate
+            from the main action row). Hidden during inline editing to avoid
+            stacking menus on top of the title input. */}
+        {!isEditing && (
+          <div className="dialogue-overflow" ref={overflowRef}>
+            <button
+              type="button"
+              className="dialogue-overflow-trigger"
+              onClick={() => setOverflowOpen((v) => !v)}
+              aria-haspopup="menu"
+              aria-expanded={overflowOpen}
+              aria-label="More memory actions"
+              title="More actions"
+            >
+              <MoreHorizontal size={16} strokeWidth={3} />
+            </button>
+            {overflowOpen && (
+              <div className="dialogue-overflow-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="dialogue-overflow-item is-danger"
+                  onClick={() => {
+                    setOverflowOpen(false);
+                    onForget();
+                  }}
+                >
+                  <Trash2 size={13} strokeWidth={2.5} />
+                  <span>Forget memory…</span>
+                </button>
+                <p className="dialogue-overflow-hint">
+                  Permanent. No <code>.compost/</code> copy.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
         <button
           type="button"
           className="dialogue-close"
@@ -2283,6 +2801,10 @@ function Dialogue({
             />
           ) : (
             <p className="dialogue-text">{selected.text}</p>
+          )}
+
+          {!isEditing && (
+            <DialogueTimestamps memory={selected} nowMs={nowTick} />
           )}
 
           <div className="dialogue-meta">
@@ -2391,6 +2913,195 @@ function Dialogue({
         </div>
       </div>
     </section>
+  );
+}
+
+/* Small dim row beneath the dialogue body that surfaces first-seen and
+   last-updated relative timestamps. If the memory has never been mutated
+   since creation (firstSeen === lastUpdated), only the "Remembered" half
+   renders, to keep the strip quiet. */
+function DialogueTimestamps({ memory, nowMs }: { memory: MemorySeed; nowMs: number }) {
+  const remembered = formatRelativeTime(memory.firstSeen, nowMs);
+  const updated = formatRelativeTime(memory.lastUpdated, nowMs);
+  const hasBeenTouched = memory.lastUpdated !== memory.firstSeen;
+  return (
+    <p className="dialogue-timestamps" aria-label="When this memory was first seen and last updated">
+      <span title={formatAbsoluteTime(memory.firstSeen)}>
+        Remembered <span className="dialogue-ts-val">{remembered}</span>
+      </span>
+      {hasBeenTouched && (
+        <>
+          <span className="dialogue-ts-sep" aria-hidden> · </span>
+          <span title={formatAbsoluteTime(memory.lastUpdated)}>
+            Updated <span className="dialogue-ts-val">{updated}</span>
+          </span>
+        </>
+      )}
+    </p>
+  );
+}
+
+/* Truncate helper for the Forget confirm preview — keep at most `n` chars
+   and append a single ellipsis. Avoids cutting at mid-word when possible. */
+function truncatePreview(s: string, n = 240): string {
+  if (s.length <= n) return s;
+  const slice = s.slice(0, n);
+  const lastSpace = slice.lastIndexOf(' ');
+  const cut = lastSpace > n - 40 ? slice.slice(0, lastSpace) : slice;
+  return cut.trimEnd() + '…';
+}
+
+/* Forget-confirm modal. Renders as a pixel-art game dialogue stacked over the
+   scene, with a 1-second hold-to-confirm pattern on the destructive button:
+   the user must press-and-hold the "Forget" button for ~1s before the action
+   fires. Mouse-up before the timer empties cancels. Esc / Cancel close.
+   Focus is trapped while open and the initial focus is Cancel (safer default
+   than the destructive option). */
+function ForgetDialog({
+  memory,
+  onCancel,
+  onConfirm,
+}: {
+  memory: MemorySeed;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [holdProgress, setHoldProgress] = useState(0); // 0..1
+  const holdRafRef = useRef<number | null>(null);
+  const holdStartRef = useRef<number | null>(null);
+  const HOLD_MS = 1000;
+
+  function startHold() {
+    if (holdRafRef.current !== null) return;
+    holdStartRef.current = performance.now();
+    const tick = (now: number) => {
+      const start = holdStartRef.current;
+      if (start === null) return;
+      const t = Math.min(1, (now - start) / HOLD_MS);
+      setHoldProgress(t);
+      if (t >= 1) {
+        holdRafRef.current = null;
+        holdStartRef.current = null;
+        onConfirm();
+        return;
+      }
+      holdRafRef.current = requestAnimationFrame(tick);
+    };
+    holdRafRef.current = requestAnimationFrame(tick);
+  }
+  function cancelHold() {
+    if (holdRafRef.current !== null) cancelAnimationFrame(holdRafRef.current);
+    holdRafRef.current = null;
+    holdStartRef.current = null;
+    setHoldProgress(0);
+  }
+  useEffect(() => () => cancelHold(), []);
+
+  // Focus the Cancel button on mount and trap Tab navigation between the two
+  // buttons so focus can't wander to the scene behind the modal.
+  useEffect(() => {
+    cancelRef.current?.focus();
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onCancel();
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusables = [cancelRef.current, confirmRef.current].filter(Boolean) as HTMLElement[];
+        if (focusables.length === 0) return;
+        const idx = focusables.indexOf(document.activeElement as HTMLElement);
+        e.preventDefault();
+        const next = e.shiftKey
+          ? focusables[(idx - 1 + focusables.length) % focusables.length]
+          : focusables[(idx + 1) % focusables.length];
+        next.focus();
+      }
+    }
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [onCancel]);
+
+  // Click-outside the inner frame cancels (clicks on the backdrop).
+  function onBackdropMouseDown(e: React.MouseEvent) {
+    if (e.target === e.currentTarget) onCancel();
+  }
+
+  return (
+    <div
+      className="forget-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="forget-title"
+      onMouseDown={onBackdropMouseDown}
+    >
+      <div className="forget-frame" ref={frameRef}>
+        <header className="forget-header">
+          <span className="forget-glyph"><Trash2 size={16} strokeWidth={2.5} /></span>
+          <h2 id="forget-title" className="forget-title">Forget this memory?</h2>
+        </header>
+        <div className="forget-preview">
+          <p className="forget-memory-title">{memory.title}</p>
+          <p className="forget-memory-text">{truncatePreview(memory.text)}</p>
+        </div>
+        <p className="forget-warn">
+          This permanently removes the memory and rewrites the source file.
+          Compost is recoverable; Forget is not.
+        </p>
+        <div className="forget-actions">
+          <button
+            ref={cancelRef}
+            type="button"
+            className="game-btn forget-cancel"
+            onClick={onCancel}
+          >
+            <span className="game-btn-face">
+              <X size={14} /> Cancel
+            </span>
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="game-btn forget-confirm"
+            onMouseDown={startHold}
+            onMouseUp={cancelHold}
+            onMouseLeave={cancelHold}
+            onTouchStart={startHold}
+            onTouchEnd={cancelHold}
+            onTouchCancel={cancelHold}
+            onKeyDown={(e) => {
+              if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                if (!e.repeat) startHold();
+              }
+            }}
+            onKeyUp={(e) => {
+              if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                cancelHold();
+              }
+            }}
+            onBlur={cancelHold}
+            aria-label="Hold to confirm Forget"
+            title="Press and hold for 1 second to confirm"
+          >
+            <span
+              className="forget-confirm-fill"
+              style={{ transform: `scaleX(${holdProgress})` }}
+              aria-hidden
+            />
+            <span className="game-btn-face">
+              <Trash2 size={14} /> {holdProgress > 0 ? 'Hold…' : 'Forget (hold)'}
+            </span>
+          </button>
+        </div>
+        <p className="forget-hint">Press and hold <kbd>Forget</kbd> for 1 second to confirm. <kbd>Esc</kbd> cancels.</p>
+      </div>
+    </div>
   );
 }
 

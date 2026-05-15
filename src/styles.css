@@ -32,6 +32,11 @@
   --water:   #6fd3ff;
   --water-d: #2a6e8a;
   --magic:   #c89efb;
+  /* Destructive-action tint used by the Forget overflow item and the
+     hold-to-confirm modal's primary button. Warmer than --alert so the
+     two reads as "irreversible" vs. "warning". */
+  --danger:   #c0533a;
+  --danger-d: #6a2415;
 
   color-scheme: dark;
   font-family: 'VT323', 'Inter', system-ui, sans-serif;
@@ -379,8 +384,13 @@ kbd {
    ──────────────────────────────────────────────────────────────── */
 .game-body {
   display: grid;
-  grid-template-columns: 72px 1fr;
+  /* filter-rail · memory-sidebar (collapses to 28px) · stage */
+  grid-template-columns: 72px 28px 1fr;
   min-height: 0;
+  transition: grid-template-columns .25s ease;
+}
+.game-body:has(.memory-sidebar[data-open="true"]) {
+  grid-template-columns: 72px 280px 1fr;
 }
 
 .filter-rail {
@@ -1337,7 +1347,8 @@ kbd {
 @media (max-width: 900px) {
   .hud-bar { grid-template-columns: auto 1fr; row-gap: 8px; }
   .hud-stats { grid-column: 1 / -1; justify-self: start; }
-  .game-body { grid-template-columns: 60px 1fr; }
+  .game-body { grid-template-columns: 60px 28px 1fr; }
+  .game-body:has(.memory-sidebar[data-open="true"]) { grid-template-columns: 60px 240px 1fr; }
   .rail-btn { width: 44px; height: 44px; }
   .rail-icon { width: 32px; height: 32px; }
   .rail-icon svg { width: 30px; height: 30px; }
@@ -1778,7 +1789,11 @@ kbd {
   .brand-eyebrow { font-size: 7px; }
   .brand-title { font-size: 11px; }
   .brand-mark { width: 44px; height: 44px; }
-  .game-body { grid-template-columns: 48px 1fr; }
+  /* At very narrow widths the sidebar collapses fully and stays off-screen
+     when open (it'd overlay the stage). User can still toggle via the chevron
+     to peek, but the default is collapsed. */
+  .game-body { grid-template-columns: 48px 24px 1fr; }
+  .game-body:has(.memory-sidebar[data-open="true"]) { grid-template-columns: 48px 220px 1fr; }
   .filter-rail { padding: 6px 4px; gap: 4px; }
   .rail-btn { width: 38px; height: 38px; }
   .rail-icon { width: 26px; height: 26px; }
@@ -2181,4 +2196,513 @@ kbd {
   0%   { opacity: 0; filter: brightness(1.6) blur(2px); }
   60%  { opacity: 1; filter: brightness(1.15) blur(0); }
   100% { opacity: 1; filter: brightness(1) blur(0); }
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Memory list sidebar — docked between filter-rail and stage. Collapses
+   to a thin strip with just the toggle chevron; expands to ~280px wide.
+   Open/closed state is driven by [data-open] attr from JS + persisted to
+   localStorage under 'mg.sidebar-open'.
+   ──────────────────────────────────────────────────────────────── */
+.memory-sidebar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.02) 0 2px, transparent 2px 4px),
+    linear-gradient(180deg, #1f1316 0%, #100808 100%);
+  border-right: 4px solid var(--frame-out);
+  box-shadow: inset 0 0 0 2px var(--frame-in);
+}
+.memory-sidebar[data-open="false"] {
+  /* collapsed strip carries only the toggle */
+}
+.memory-sidebar-toggle {
+  position: absolute;
+  top: 10px;
+  right: -2px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  cursor: pointer;
+  color: var(--paper);
+  background: linear-gradient(180deg, #3a2628, #1f1316);
+  border: 2px solid var(--frame-out);
+  border-radius: 6px;
+  box-shadow: 0 2px 0 var(--frame-out), inset 0 0 0 1px var(--frame-in);
+  transition: transform .08s, background .15s, color .15s;
+}
+.memory-sidebar-toggle:hover {
+  background: var(--gold);
+  color: var(--ink);
+  transform: translateY(1px);
+  box-shadow: 0 1px 0 var(--frame-out), inset 0 0 0 1px var(--gold-l);
+}
+.memory-sidebar[data-open="false"] .memory-sidebar-toggle svg {
+  transform: rotate(0); /* ListFilter icon stays upright */
+}
+.memory-sidebar[data-open="true"] .memory-sidebar-toggle svg {
+  /* ChevronLeft is already pointing the right way to mean "collapse" */
+}
+
+.memory-sidebar-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+  padding: 10px 38px 10px 12px; /* leave room for the toggle on the right */
+  border-bottom: 2px solid var(--frame-out);
+  background: rgba(31, 18, 8, 0.45);
+}
+.memory-sidebar-count {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--gold);
+  text-shadow: 1px 1px 0 var(--ink);
+}
+.memory-sidebar-clear {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 7px;
+  background: var(--red);
+  color: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 0 2px 0 var(--ink), inset 0 0 0 1px #de6452;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 7px;
+  letter-spacing: .06em;
+  cursor: pointer;
+  transition: transform .08s;
+}
+.memory-sidebar-clear:hover { transform: translateY(1px); box-shadow: 0 1px 0 var(--ink), inset 0 0 0 1px #f47c64; }
+.memory-sidebar-clear:active { transform: translateY(2px); box-shadow: none; }
+
+.memory-sidebar-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.memory-sidebar-empty {
+  padding: 18px 12px;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--dim);
+  text-align: center;
+}
+
+.memory-sidebar-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 10px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  color: var(--paper);
+  background: rgba(31, 18, 8, 0.35);
+  border: 2px solid var(--frame-out);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px var(--frame-in);
+  text-align: left;
+  font: inherit;
+  transition: transform .08s, background .12s, border-color .12s;
+}
+.memory-sidebar-row:hover,
+.memory-sidebar-row.is-hovered,
+.memory-sidebar-row:focus-visible {
+  outline: none;
+  background: rgba(245, 215, 122, 0.10);
+  border-color: var(--gold-d);
+  transform: translateY(-1px);
+}
+.memory-sidebar-row.is-selected {
+  background: rgba(245, 215, 122, 0.16);
+  border-color: var(--gold);
+  box-shadow: inset 0 0 0 1px var(--gold-d), 0 0 8px rgba(245, 215, 122, .25);
+}
+.memory-sidebar-icon {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  background: var(--parchment);
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  overflow: hidden;
+  flex: none;
+}
+.memory-sidebar-icon img,
+.memory-sidebar-icon .kind-sprite {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+.memory-sidebar-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.memory-sidebar-title {
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  color: var(--paper);
+  letter-spacing: .02em;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.memory-sidebar-hearts {
+  display: inline-flex;
+  gap: 1px;
+  align-items: center;
+}
+.memory-sidebar-heart {
+  display: inline-block;
+  width: 5px; height: 5px;
+  background: rgba(255,243,176,0.15);
+  border-radius: 1px;
+}
+.memory-sidebar-heart.on {
+  background: var(--alert);
+  box-shadow: 0 0 2px rgba(255, 91, 105, .6);
+}
+.memory-sidebar-mood {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink);
+  box-shadow: 0 0 4px currentColor;
+  flex: none;
+}
+
+/* While fast-travelling from a sidebar row, briefly enable a transform
+   transition so the world glides instead of snapping. After 320ms the
+   data attr clears and movement is instant again (so keyboard walking
+   and drag-to-pan stay snappy). */
+.world[data-traveling="true"] {
+  transition: transform .3s cubic-bezier(.4, 1.4, .5, 1);
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Inspector timestamps + overflow menu
+   ──────────────────────────────────────────────────────────────── */
+
+/* Quiet "Remembered X · Updated Y" row beneath the body text. Sits in the
+   same flow as .dialogue-meta but visually dimmer so it reads as marginalia
+   rather than competing with the src/age/importance chips. */
+.dialogue-timestamps {
+  margin: -2px 0 2px;
+  font-family: 'VT323', monospace;
+  font-size: 14px;
+  letter-spacing: .04em;
+  color: var(--dimmer);
+  cursor: help;
+}
+.dialogue-timestamps .dialogue-ts-val {
+  color: var(--dim);
+}
+.dialogue-timestamps .dialogue-ts-sep {
+  color: rgba(200, 168, 144, .35);
+  margin: 0 2px;
+}
+
+/* Overflow trigger pinned to the dialogue-frame's top-left (the close button
+   already owns top-right). Pixel-art button: warm-cream face with the same
+   chunky outline as the rest of the inspector chrome. */
+.dialogue-overflow {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  z-index: 2;
+}
+.dialogue-overflow-trigger {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  padding: 0;
+  cursor: pointer;
+  color: var(--paper);
+  background: linear-gradient(180deg, #3a2628, #1f1316);
+  border: 3px solid var(--frame-out);
+  border-radius: 6px;
+  box-shadow:
+    inset 0 0 0 2px var(--frame-in),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.35),
+    0 3px 0 var(--frame-out);
+  transition: transform 0.08s, box-shadow 0.08s, filter 0.15s;
+}
+.dialogue-overflow-trigger svg { display: block; }
+.dialogue-overflow-trigger:hover {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 0 0 2px var(--gold-d),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.35),
+    0 2px 0 var(--frame-out);
+}
+.dialogue-overflow-trigger:active {
+  transform: translateY(3px);
+  box-shadow:
+    inset 0 0 0 2px var(--gold-d),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.35),
+    0 0 0 var(--frame-out);
+}
+.dialogue-overflow-trigger:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+.dialogue-overflow-menu {
+  position: absolute;
+  top: 32px;
+  left: 0;
+  min-width: 200px;
+  padding: 6px;
+  display: flex; flex-direction: column; gap: 4px;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 2px, transparent 2px 4px),
+    linear-gradient(180deg, #2a1a20 0%, #170c12 100%);
+  border: 3px solid var(--frame-out);
+  border-radius: 8px;
+  box-shadow:
+    inset 0 0 0 2px var(--frame-in),
+    0 6px 0 var(--frame-out),
+    0 10px 24px rgba(0,0,0,.55);
+  animation: overflow-pop .14s cubic-bezier(.4,1.4,.5,1);
+}
+@keyframes overflow-pop {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.dialogue-overflow-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  font-family: 'VT323', monospace;
+  font-size: 16px;
+  letter-spacing: .04em;
+  color: var(--paper);
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: left;
+}
+.dialogue-overflow-item:hover {
+  background: rgba(245, 215, 122, .08);
+  border-color: rgba(245, 215, 122, .35);
+}
+.dialogue-overflow-item:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 1px;
+}
+.dialogue-overflow-item.is-danger {
+  color: #ff9e7e;
+}
+.dialogue-overflow-item.is-danger:hover {
+  background: rgba(192, 83, 58, .18);
+  border-color: var(--danger);
+  color: #ffd4c4;
+}
+.dialogue-overflow-item.is-danger svg {
+  color: var(--danger);
+}
+.dialogue-overflow-hint {
+  margin: 4px 6px 2px;
+  font-family: 'VT323', monospace;
+  font-size: 12px;
+  color: var(--dimmer);
+  letter-spacing: .04em;
+}
+.dialogue-overflow-hint code {
+  padding: 0 3px;
+  font-family: 'VT323', monospace;
+  font-size: 12px;
+  color: var(--gold-l);
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Forget confirm modal — pixel-art dialogue stacked over the scene.
+   Mirrors the look of the welcome card but tighter and tinted toward
+   --danger so the destructive action reads instantly.
+   ──────────────────────────────────────────────────────────────── */
+.forget-overlay {
+  position: fixed; inset: 0;
+  z-index: 12000;
+  display: grid; place-items: center;
+  padding: 20px;
+  background:
+    radial-gradient(60% 50% at 50% 50%, rgba(60, 20, 14, .55) 0%, rgba(10, 6, 12, .92) 70%);
+  backdrop-filter: blur(2px);
+  animation: welcome-fade .18s ease-out;
+}
+
+.forget-frame {
+  position: relative;
+  width: min(520px, calc(100vw - 40px));
+  padding: 20px 22px 18px;
+  background:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.03) 0 2px, transparent 2px 4px),
+    linear-gradient(180deg, #3a1f1c 0%, #1e0f10 100%);
+  color: var(--paper);
+  border: 4px solid var(--frame-out);
+  border-radius: 12px;
+  box-shadow:
+    inset 0 0 0 2px var(--danger-d),
+    inset 0 0 0 4px var(--frame-in),
+    inset 0 0 60px rgba(192, 83, 58, .12),
+    0 8px 0 var(--frame-out),
+    0 24px 60px rgba(0,0,0,.7);
+  animation: card-rise .26s cubic-bezier(.5,1.6,.4,1);
+}
+.forget-frame::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -10px;
+  transform: translateX(-50%);
+  width: 60px; height: 10px;
+  background: linear-gradient(180deg, var(--danger), var(--danger-d));
+  border: 3px solid var(--frame-out);
+  border-bottom: 0;
+  border-radius: 6px 6px 0 0;
+}
+
+.forget-header {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 12px;
+}
+.forget-glyph {
+  display: grid; place-items: center;
+  width: 30px; height: 30px;
+  color: var(--paper);
+  background: linear-gradient(180deg, var(--danger), var(--danger-d));
+  border: 3px solid var(--frame-out);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 2px #e07a5e, inset 0 -2px 0 rgba(0,0,0,.35);
+}
+.forget-title {
+  margin: 0;
+  font-family: 'VT323', monospace;
+  font-size: 24px;
+  letter-spacing: .04em;
+  color: var(--paper);
+  text-shadow: 2px 2px 0 var(--ink);
+}
+
+.forget-preview {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  background: rgba(0,0,0,.28);
+  border: 2px solid var(--frame-out);
+  border-left: 4px solid var(--danger);
+  border-radius: 4px 6px 6px 4px;
+}
+.forget-memory-title {
+  margin: 0 0 4px;
+  font-family: 'VT323', monospace;
+  font-size: 18px;
+  color: var(--paper);
+  text-shadow: 1px 1px 0 var(--ink);
+  overflow-wrap: anywhere;
+}
+.forget-memory-text {
+  margin: 0;
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--cream);
+  letter-spacing: .02em;
+  overflow-wrap: anywhere;
+}
+
+.forget-warn {
+  margin: 0 0 14px;
+  font-family: 'VT323', monospace;
+  font-size: 16px;
+  line-height: 1.4;
+  color: #ffc9b8;
+  letter-spacing: .02em;
+}
+
+.forget-actions {
+  display: flex; gap: 10px;
+  justify-content: flex-end;
+}
+.forget-actions .game-btn { min-width: 130px; }
+
+/* Cancel button — neutral / cream-tinted, distinct from the destructive
+   confirm. Reuses .game-btn base. */
+.game-btn.forget-cancel {
+  background: linear-gradient(180deg, #4a3328, #1f1316);
+  box-shadow:
+    0 3px 0 var(--frame-out),
+    inset 0 0 0 2px var(--frame-in),
+    inset 0 -3px 0 rgba(0,0,0,.35);
+}
+.game-btn.forget-cancel:hover {
+  box-shadow:
+    0 2px 0 var(--frame-out),
+    inset 0 0 0 2px var(--gold-d),
+    inset 0 -2px 0 rgba(0,0,0,.35);
+}
+
+/* Confirm button — wears the destructive --danger gradient + a fill bar that
+   sweeps left-to-right as the user holds the button down. The fill is
+   transform-scaled in JS so animation is GPU-accelerated. */
+.game-btn.forget-confirm {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--danger), var(--danger-d));
+  box-shadow:
+    0 3px 0 var(--frame-out),
+    inset 0 0 0 2px #e07a5e,
+    inset 0 -3px 0 rgba(0,0,0,.35);
+}
+.game-btn.forget-confirm:hover {
+  box-shadow:
+    0 2px 0 var(--frame-out),
+    inset 0 0 0 2px #ff9e7e,
+    inset 0 -2px 0 rgba(0,0,0,.35);
+}
+.game-btn.forget-confirm .game-btn-face {
+  position: relative;
+  z-index: 1;
+}
+.forget-confirm-fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, #ffae8a, #c0533a);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform .04s linear;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px #ffd4c4;
+}
+
+.forget-hint {
+  margin: 12px 0 0;
+  text-align: center;
+  font-family: 'VT323', monospace;
+  font-size: 13px;
+  letter-spacing: .04em;
+  color: var(--dimmer);
+}
+.forget-hint kbd {
+  padding: 1px 5px;
+  background: rgba(0,0,0,.35);
+  border: 1px solid var(--frame-in);
+  border-radius: 3px;
+  color: var(--paper);
+  font-family: 'VT323', monospace;
+  font-size: 12px;
 }
