@@ -926,10 +926,11 @@ function App() {
   const [showImportHelp, setShowImportHelp] = useState(false);
   // While true, existing plants fade out so a new memory set can sprout in.
   const [isImporting, setIsImporting] = useState(false);
-  // After an import, the new memories spawn at GARDEN_SPOTS scattered across
-  // the world — usually off-camera. Stash a memory id here; an effect below
-  // pans the camera to it once it shows up in `placed`.
-  const [pendingPanId, setPendingPanId] = useState<string | null>(null);
+  // (Previously this state, paired with an effect, panned the camera to the
+  // first newly-imported memory after import. That left the player far
+  // off-screen — usually toward the top-right of the world where the first
+  // GARDEN_SPOT sits — so it's been replaced with a recenter-on-player call
+  // at each import call site.)
 
   // Memory list sidebar — open by default on desktop, collapsed below 1024.
   // Persisted under 'mg.sidebar-open' so a user's preference survives reloads.
@@ -1404,8 +1405,17 @@ function App() {
     const wasSample = isSample;
     setIsSample(false);
     setSelectedId(parsed[0]?.id ?? null);
-    // Pan to the first newly-imported memory so the user actually sees it.
-    setPendingPanId(parsed[0]?.id ?? null);
+    // Keep the camera centered on the player so importing doesn't yank the
+    // viewport across the world to wherever the first GARDEN_SPOT happens to
+    // sit. The new plants will pop in around the player and elsewhere in the
+    // world; the user can walk over to explore.
+    {
+      const p = posRef.current ?? PLAYER_START;
+      setCamera(clampCamera(
+        p.col * TILE + TILE / 2 - VIEWPORT_W / 2,
+        p.row * TILE + TILE / 2 - VIEWPORT_H / 2,
+      ));
+    }
     window.setTimeout(() => setIsImporting(false), 60);
 
     const fileLabel = fileNames.length === 1
@@ -1450,7 +1460,12 @@ function App() {
       setMemories(seeds);
       setIsSample(false);
       setSelectedId(seeds[0]?.id ?? null);
-      setPendingPanId(seeds[0]?.id ?? null);
+      // Recenter on the player (see importFiles for rationale).
+      const p = posRef.current ?? PLAYER_START;
+      setCamera(clampCamera(
+        p.col * TILE + TILE / 2 - VIEWPORT_W / 2,
+        p.row * TILE + TILE / 2 - VIEWPORT_H / 2,
+      ));
       window.setTimeout(() => setIsImporting(false), 60);
     }, 280);
   }
@@ -1480,7 +1495,12 @@ function App() {
               setMemories(seeds);
               setIsSample(false);
               setSelectedId(seeds[0]?.id ?? null);
-              setPendingPanId(seeds[0]?.id ?? null);
+              // Recenter on the player (see importFiles for rationale).
+              const p = posRef.current ?? PLAYER_START;
+              setCamera(clampCamera(
+                p.col * TILE + TILE / 2 - VIEWPORT_W / 2,
+                p.row * TILE + TILE / 2 - VIEWPORT_H / 2,
+              ));
               window.setTimeout(() => setIsImporting(false), 60);
             }, 280);
             // Don't persist the handle: the per-file write-back path doesn't
@@ -1630,21 +1650,6 @@ function App() {
       return clamped.x === c.x && clamped.y === c.y ? c : clamped;
     });
   }, [playerPos]);
-
-  // After an import, pan the camera to the first newly-placed memory so the
-  // user can actually see it (the viewport-culling filter on .plant would
-  // otherwise hide the just-imported plants because they're scattered across
-  // the world). Effect fires once placed has the pending id, then clears.
-  useEffect(() => {
-    if (!pendingPanId) return;
-    const target = allPlaced.find((m) => m.id === pendingPanId);
-    if (!target) return;
-    setCamera(clampCamera(
-      target.col * TILE + TILE / 2 - VIEWPORT_W / 2,
-      target.row * TILE + TILE / 2 - VIEWPORT_H / 2,
-    ));
-    setPendingPanId(null);
-  }, [pendingPanId, allPlaced]);
 
   function recenterCamera() {
     setCamera(clampCamera(
