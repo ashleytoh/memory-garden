@@ -13,23 +13,33 @@ The UI should feel emotionally legible, warm, cozy, and game-like — closer to 
 ## Current Problem
 
 The MVP works, but the visuals are not good enough. The user dislikes the current look. Improve the visual design substantially.
-
+                   
 ## Goals for the redesign
 
-- Make it feel like a charming pixel-art game interface.
+- Make it feel like a charming pixel-art game interface in the spirit of Stardew Valley.
 - Keep it polished and modern despite the pixel style.
 - Avoid generic SaaS dashboard vibes.
-- Use CSS-only art; do not add external image assets unless absolutely necessary.
+- Bundled pixel-art assets are allowed (PNG spritesheets / tilesets), provided they are CC0 or otherwise freely licensed and shipped locally with the app. No remote image fetches at runtime.
 - Keep the app local-only and browser-only.
 - Preserve the core functionality:
   - sample memory garden on load
   - import `.md` / `.txt` files
   - search
   - filters
-  - clickable memory objects
+  - memory objects are interactable (see Input model)
   - inspector panel
   - water / mark important / compost interactions
 - Improve spatial composition, hierarchy, colors, hover/selected states, and empty states.
+
+## Input model
+
+The garden is gamified with a controllable character:
+
+- A pixel-art avatar lives in the scene and is moved with **arrow keys or WASD**.
+- Movement is tile-based / grid-aligned, with simple collision against scene props (cottage, fence, water).
+- Approaching a memory plant **focuses** it; pressing **Space / E / Enter** opens it in the inspector — replacing mouse-click as the primary interaction.
+- Mouse clicks on memories should continue to work as a fallback for accessibility.
+- The avatar should have at least 4-direction facing and a basic walk cycle.
 
 ## Suggested visual direction
 
@@ -52,7 +62,8 @@ Visual checklist:
 - Buttons should feel tactile and playful.
 - Typography can mix a pixel display font for headings with readable body text.
 - Add hover/selected states that feel magical: glow, bounce, sparkle, cursor affordance.
-- Avoid photorealism, gradients that feel corporate, generic dashboard cards, and emoji-only sprites if CSS pixel shapes can do better.
+- Avoid photorealism, gradients that feel corporate, generic dashboard cards, and emoji-only sprites if real pixel sprites or CSS pixel shapes can do better.
+- Reference look: Stardew Valley — warm earth tones, chunky black/dark outlines on sprites, hand-drawn-feeling grass and water tiles, dappled lighting. Match the *feel*, not specific copyrighted assets.
 
 ## Technical constraints
 
