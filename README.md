@@ -80,14 +80,3 @@ Files in `.compost/` are soft-deleted memories you can manually restore. Forget 
 
 If you don't connect a folder, you can still play with the sample garden or drop a few `.md` / `.txt` files in via the import button — but changes won't survive a reload. The badge in the top right will tell you which mode you're in.
 
-## Stack
-
-- Vite + React 19 + TypeScript
-- No backend, no accounts, no remote calls
-- Pixel-art assets are local CC0 / hand-drawn
-
-## Why
-
-AI memory shouldn't be a black box. Memory Garden is mostly a way to make that memory feel less like a database I'm afraid to open and more like a place I want to visit.
-
-It's a hobby project. Code is messy, art is amateur, ship date is never.
